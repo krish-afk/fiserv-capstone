@@ -1,11 +1,11 @@
-# Predicting Personal Consumption Expenditures (PCE) using Fiserv Small Business Index & Spend Trend Data  
+# Predicting Personal Consumption Expenditures (PCE) & Marginal Rate of Technical Substitution (MRTS) using Fiserv Small Business Index & Spend Trend Data  
 ## and Modeling Trading Gains on Forecast Platforms (e.g., FORECASTEX)
 
 ## Overview
 This capstone project leverages Fiserv’s Small Business Index (FSBI) and related spending trend data to forecast U.S. Personal Consumption Expenditures (PCE), a key economic indicator. We then simulate trading strategies on a FORECASTEX-style framework to model potential gains/losses from more accurate PCE predictions. 
 
 ## Goals
-1. Establish whether FSBI is a good leading predictor of the PCE index.  
+1. Establish whether FSBI is a good leading predictor of the PCE and MRTS.  
 2. If yes, identify and simulate profitable trading strategies using this information.
 
 ## Project Objectives

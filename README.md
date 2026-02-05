@@ -64,9 +64,9 @@ This project is based solely on publicly available data plus the provided Fiserv
 
 - **Fiserv**: Small Business Index / Spend Trend datasets (provided)
 - **PCE**: U.S. Bureau of Economic Analysis (BEA)
-- **Optional macro indicators**: inflation, interest rates, GDP growth, consumer confidence, etc.
+- **MRTS**:
+- **Macro indicators**: inflation, interest rates, GDP growth, consumer confidence, etc.
 
-> Do not commit proprietary or restricted data. Use local storage under `data/raw/` and keep large files out of git.
 
 ## Tools & Technologies (planned)
 - Languages: Python (primary), R (optional)

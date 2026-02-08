@@ -1,1 +1,36 @@
+# macOS
+.DS_Store
+
+# VS Code
+.vscode/
+
+# Vim / swap files
+*.swp
+
+# Virtual environments
+.venv/
+venv/
+.env/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Secrets
+.env
+*.key
+*.pem
+
+# Local config
+config_local.yaml
+config_local.json
+
+# Data
 data/
+*.csv
+*.parquet
+
+# Outputs
+results/
+logs/
+*.log

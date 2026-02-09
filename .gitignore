@@ -26,7 +26,6 @@ config_local.yaml
 config_local.json
 
 # Data
-data/
 *.csv
 *.parquet
 

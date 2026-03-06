@@ -34,3 +34,19 @@ data/
 results/
 logs/
 *.log
+
+# Ignore Jupyter Notebooks and Checkpoints
+*.ipynb
+.ipynb_checkpoints/
+
+# Ignore Local Modeling Outputs
+models/ensemble/Archive/
+models/ensemble/results/
+__pycache__/
+
+
+
+
+
+
+

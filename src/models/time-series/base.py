@@ -215,11 +215,27 @@ def directional_accuracy(actuals: np.ndarray, predictions: np.ndarray) -> float:
     return float(np.mean(np.sign(actuals) == np.sign(predictions)))
 
 
+def mean_absolute_percentage_error(actuals: np.ndarray, predictions: np.ndarray) -> float:
+    """
+    Mean Absolute Percentage Error (MAPE), returned as a decimal (0.05 = 5%).
+
+    Observations where the actual value is zero are excluded because MAPE is
+    undefined there. Returns NaN if all actuals are zero.
+    """
+    actuals = np.asarray(actuals, dtype=float)
+    predictions = np.asarray(predictions, dtype=float)
+    mask = actuals != 0
+    if not mask.any():
+        return np.nan
+    return float(np.mean(np.abs((actuals[mask] - predictions[mask]) / actuals[mask])))
+
+
 def evaluate_forecast(actuals: np.ndarray, predictions: np.ndarray) -> dict:
-    """Compute MAE, RMSE, and directional accuracy for a single forecast."""
+    """Compute MAE, RMSE, MAPE, and directional accuracy for a single forecast."""
     return {
         'MAE': mean_absolute_error(actuals, predictions),
         'RMSE': np.sqrt(mean_squared_error(actuals, predictions)),
+        'MAPE': mean_absolute_percentage_error(actuals, predictions),
         'DirectionalAcc': directional_accuracy(actuals, predictions),
     }
 
@@ -307,7 +323,7 @@ def summarize_results(results_df: pd.DataFrame) -> pd.DataFrame:
     pd.DataFrame
         Summary with columns like MAE_mean, MAE_std, RMSE_mean, etc.
     """
-    metrics = ['MAE', 'RMSE', 'DirectionalAcc']
+    metrics = ['MAE', 'RMSE', 'MAPE', 'DirectionalAcc']
 
     summary = (results_df
                .groupby(['target', 'model', 'horizon'])[metrics]
@@ -378,9 +394,9 @@ def save_results(summary: pd.DataFrame, timestamp: str | None = None) -> list[Pa
 
         # Build a wide matrix: rows = models, columns = (horizon, metric)
         # Lower MAE/RMSE is better; higher DirectionalAcc is better.
-        metric_cols = ['MAE_mean', 'RMSE_mean', 'DirectionalAcc_mean']
-        metric_labels = ['MAE', 'RMSE', 'Dir.Acc']
-        higher_is_better = [False, False, True]
+        metric_cols = ['MAE_mean', 'RMSE_mean', 'MAPE_mean', 'DirectionalAcc_mean']
+        metric_labels = ['MAE', 'RMSE', 'MAPE', 'Dir.Acc']
+        higher_is_better = [False, False, False, True]
 
         col_tuples = [(f'H{h}', m) for h in horizons for m in metric_labels]
         col_index = pd.MultiIndex.from_tuples(col_tuples, names=['Horizon', 'Metric'])
@@ -401,7 +417,7 @@ def save_results(summary: pd.DataFrame, timestamp: str | None = None) -> list[Pa
                 col = (f'H{h}', ml)
                 vals = h_data.reindex(model_order)[mc]
                 raw_values[col] = vals.values
-                fmt_str = '{:.1%}' if ml == 'Dir.Acc' else '{:.4f}'
+                fmt_str = '{:.1%}' if ml in ('Dir.Acc', 'MAPE') else '{:.4f}'
                 fmt_values[col] = [fmt_str.format(v) for v in vals.values]
 
         # Normalize each column 0→1 where 1 = best performer

@@ -109,7 +109,13 @@ def main():
             target, exog_df, exog_cols, order,
             max_exog_features=MAX_EXOG_FEATS
         )
-        ets_predictors   = ets.build_predictors()
+        ets_predictors   = ets.build_predictors(
+            target=target,
+            exog_df=exog_df,
+            exog_cols=exog_cols,
+            max_exog_features=MAX_EXOG_FEATS,
+            limited_features=valid_limited if valid_limited else None,
+        )
         theta_predictors = theta_module.build_predictors()
 
         all_predictors = arima_predictors + ets_predictors + theta_predictors

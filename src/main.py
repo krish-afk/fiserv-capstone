@@ -4,7 +4,6 @@ import pandas as pd
 from pathlib import Path
 
 from src.utils.config import config
-from src.data.preprocess import load_and_preprocess
 from src.data.features import build_all_features, build_handpicked_v1
 from src.data.ingest import run_ingestion
 from src.data.load import load_all_raw

@@ -1,7 +1,10 @@
 # src/data/ingest.py
+import shutil
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
+from fredapi import Fred
+
 from src.utils.config import config
 
 RAW_DIR = Path(config["paths"]["raw_data"])
@@ -49,14 +52,23 @@ def fetch_fred(series: list = None) -> Path:
     out_path = _make_raw_path("fred")
 
     # TODO: implement using fredapi or pandas_datareader
-    # pip install fredapi
-    # from fredapi import Fred
     # fred = Fred(api_key=os.environ["FRED_API_KEY"])
     # Each series fetched separately then merged on date index
     # df.to_csv(out_path, index=False)
 
     print(f"[INFO] FRED data written to {out_path}")
     return out_path
+
+def fetch_uscb(series_id: str = None) -> Path:
+    """
+    Pull MRTS data from US Census Bureau API and write to data/raw/.
+
+    Args:
+        series_id: USCB series identifier; defaults to config value
+    Returns:
+        Path to written CSV value
+    """
+    pass
 
 
 def copy_static(source_name: str, source_path: Path) -> Path:
@@ -70,7 +82,6 @@ def copy_static(source_name: str, source_path: Path) -> Path:
     Returns:
         Path to standardized copy in data/raw/
     """
-    import shutil
     out_path = _make_raw_path(source_name)
     shutil.copy(source_path, out_path)
     print(f"[INFO] {source_name} copied to {out_path}")
@@ -85,6 +96,7 @@ def run_ingestion() -> dict[str, Path]:
     paths = {}
     paths["bea"]  = fetch_bea()
     paths["fred"] = fetch_fred()
+    paths["uscb"] = fetch_uscb()
 
     # FSBI is static — point to pre-downloaded file
     fsbi_filename = config["data"]["sources"]["fsbi"]["filename"]

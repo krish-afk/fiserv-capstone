@@ -25,10 +25,14 @@ __pycache__/
 config_local.yaml
 config_local.json
 
-# Data
+# Data files
 data/
 *.csv
 *.parquet
+
+# track source code related to data handling
+!src/data/
+!src/data/**
 
 # Outputs
 results/
@@ -36,7 +40,6 @@ logs/
 *.log
 
 # Ignore Jupyter Notebooks and Checkpoints
-
 .ipynb_checkpoints/
 
 # Ignore Local Modeling Outputs

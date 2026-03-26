@@ -1,0 +1,63 @@
+# config.yaml
+
+paths:
+  raw_data: "data/raw/"
+  processed_data: "data/processed/"
+  forecasts: "data/forecasts/"
+  experiments: "experiments/"
+
+data:
+  target: "pce"
+  date_col: "date"
+  frequency: "MS"
+  train_end: "2022-12-01"
+  test_start: "2023-01-01"
+
+  sources:
+    bea:
+      type: "api"
+      series_id: "DPCERL1Q225SBEA"   # TODO: confirm correct BEA series
+      frequency: "monthly"
+    fred:
+      type: "api"
+      series: ["CPIAUCSL", "FEDFUNDS", "GDP"]
+    fsbi:
+      type: "csv"
+      filename: "fsbi_raw.csv"        # Pre-downloaded, lives in data/raw/
+
+  alignment:
+    method: "ffill"                   # How to handle frequency mismatches
+    max_fill_periods: 3               # Don't ffill more than N periods
+
+  panels:
+    national:
+      geography: null                 # null = no geographic filter
+      sectors: null                   # null = all sectors
+    california:
+      geography: ["CA"]
+      sectors: null
+    california_retail:
+      geography: ["CA"]
+      sectors: ["retail"]
+    national_retail:
+      geography: null
+      sectors: ["retail"]
+
+features:
+  lags: [1, 3, 6, 12]
+  rolling_windows: [3, 6, 12]
+  growth_rates: true
+
+transforms:
+  scaling: "standard"                 # "standard", "minmax", or null
+  differencing: 1                     # Order of differencing; 0 = none
+
+forecasting:
+  horizons: [1]            # Primary; extend to [1, 3, 6] for multi-step
+  walk_forward_min_train: 36  # Minimum observations before first forecast
+
+models:
+  run: ["baseline", "timeseries", "ml"]  # Toggle families on/off
+
+logging:
+  level: "INFO"

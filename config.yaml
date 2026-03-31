@@ -10,20 +10,31 @@ data:
   target: "pce"
   date_col: "date"
   frequency: "MS"
+  start_date: "2010-01-01"
+  end_date: "2024-12-01"
+  max_retries: 3
+  sleep_between: 0.7
   train_end: "2022-12-01"
   test_start: "2023-01-01"
 
   sources:
     bea:
       type: "api"
-      series_id: "DPCERL1Q225SBEA"   # TODO: confirm correct BEA series
-      frequency: "monthly"
+      data_set: "NIPA"
+      table_name: "T20805"     # NIPA: PCE monthly, not seasonally adjusted (T20804 = SA)
+      line_number: 1           # Line 1 = total PCE
+      frequency: "M"
+      year: "ALL"
     fred:
       type: "api"
       series: ["CPIAUCSL", "FEDFUNDS", "GDP"]
     fsbi:
       type: "csv"
       filename: "fsbi_raw.csv"        # Pre-downloaded, lives in data/raw/
+    uscb:
+      type: "api"
+      category_code: "44000"   # NAICS 44-45: total retail trade
+      seasonally_adj: "no"
 
   alignment:
     method: "ffill"                   # How to handle frequency mismatches

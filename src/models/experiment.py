@@ -1,6 +1,7 @@
 # src/models/experiment.py
 import fnmatch
 import json
+import re
 import pandas as pd
 from datetime import datetime
 from itertools import product
@@ -9,8 +10,15 @@ from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from src.models.base import BaseForecaster
 from src.models.baselines import NaiveForecaster, MeanForecaster
-from src.models.timeseries import ARIMAForecaster, ARIMAXForecaster, ETSForecaster
+from src.models.timeseries import (
+    ARIMAForecaster,
+    ARIMAXForecaster,
+    ETSForecaster,
+    ThetaForecaster,
+    ETSXForecaster,
+)
 from src.models.ml import (
+    OLSForecaster,
     RidgeForecaster,
     LassoForecaster,
     RandomForestForecaster,
@@ -31,6 +39,9 @@ _MODEL_REGISTRY: Dict[str, type] = {
     "ARIMAForecaster":            ARIMAForecaster,
     "ARIMAXForecaster":           ARIMAXForecaster,
     "ETSForecaster":              ETSForecaster,
+    "ThetaForecaster":            ThetaForecaster,
+    "ETSXForecaster":             ETSXForecaster,
+    "OLSForecaster":              OLSForecaster,
     "RidgeForecaster":            RidgeForecaster,
     "LassoForecaster":            LassoForecaster,
     "RandomForestForecaster":     RandomForestForecaster,
@@ -102,7 +113,14 @@ def _make_experiment_dir() -> Path:
     exp_dir = Path(config["paths"]["experiments"]) / f"{timestamp}_run"
     exp_dir.mkdir(parents=True, exist_ok=True)
     (exp_dir / "plots").mkdir(exist_ok=True)
+    (exp_dir / "artifacts").mkdir(exist_ok=True)
     return exp_dir
+
+
+def _artifact_filename(trial: "Trial") -> str:
+    """Sanitized filename for a trial's artifact JSON."""
+    raw = f"{trial.panel_name}__{trial.model_label}__{trial.feature_set_name}"
+    return re.sub(r"[^\w\-]", "_", raw)[:180] + ".json"
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +255,11 @@ def run_experiment(
                 **metrics,
             })
 
+            artifacts = trial.model.summarize_artifacts()
+            if artifacts:
+                artifact_path = exp_dir / "artifacts" / _artifact_filename(trial)
+                artifact_path.write_text(json.dumps(artifacts, indent=2, default=float))
+
             preds = preds.reset_index()
             preds["model_name"]  = trial.model_label
             preds["feature_set"] = trial.feature_set_name
@@ -266,6 +289,9 @@ def run_experiment(
             exp_dir / "forecasts.csv", index=False
         )
 
+    n_artifacts = sum(
+        1 for t in trials if (exp_dir / "artifacts" / _artifact_filename(t)).exists()
+    )
     metadata = {
         "timestamp":      datetime.now().isoformat(),
         "horizon":        horizon,
@@ -274,6 +300,7 @@ def run_experiment(
         "models":         sorted({t.model_label for t in trials}),
         "feature_sets":   sorted({t.feature_set_name for t in trials}),
         "n_trials":       len(trials),
+        "n_artifacts":    n_artifacts,
     }
     with open(exp_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)

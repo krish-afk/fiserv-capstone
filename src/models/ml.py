@@ -1,5 +1,7 @@
 # src/models/ml.py
+import numpy as np
 import pandas as pd
+import statsmodels.api as sm
 from typing import Optional
 
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
@@ -9,6 +11,53 @@ from sklearn.preprocessing import StandardScaler
 from xgboost import XGBRegressor
 
 from src.models.base import BaseForecaster
+
+
+class OLSForecaster(BaseForecaster):
+    """
+    OLS regression (no regularization) via statsmodels.
+    No scaling applied — OLS estimates are scale-invariant.
+    Serves as a sanity-check just above naive baselines: any regularized or
+    ensemble model should beat OLS once the feature count is non-trivial.
+    """
+
+    def __init__(self, horizon: int = 1, **kwargs):
+        super().__init__(horizon=horizon, **kwargs)
+        self._result = None
+
+    @property
+    def name(self) -> str:
+        return "ols"
+
+    def fit(self, y_train: pd.Series, X_train: Optional[pd.DataFrame] = None):
+        assert X_train is not None, "OLSForecaster requires X_train"
+        X = sm.add_constant(X_train, has_constant="add")
+        self._result = sm.OLS(y_train, X).fit()
+        self.is_fitted = True
+        # Record per-fold interpretability — skip the added constant row
+        feat_names = X_train.columns.tolist()
+        self._fold_artifacts.append({
+            "coef":    dict(zip(feat_names, self._result.params[1:].values)),
+            "t_stat":  dict(zip(feat_names, self._result.tvalues[1:].values)),
+            "p_value": dict(zip(feat_names, self._result.pvalues[1:].values)),
+        })
+
+    def predict(self, X_test: Optional[pd.DataFrame] = None) -> pd.Series:
+        assert self.is_fitted, "Model must be fit before predicting"
+        assert X_test is not None, "OLSForecaster requires X_test"
+        X = sm.add_constant(X_test, has_constant="add")
+        preds = self._result.predict(X)
+        return pd.Series(preds.values, index=X_test.index)
+
+    def summarize_artifacts(self) -> dict:
+        if not self._fold_artifacts:
+            return {}
+        return {
+            "n_folds":      len(self._fold_artifacts),
+            "coefficients": self._agg_coef(self._fold_artifacts, "coef"),
+            "t_stats":      self._agg_coef(self._fold_artifacts, "t_stat"),
+            "p_values":     self._agg_coef(self._fold_artifacts, "p_value"),
+        }
 
 
 class RidgeForecaster(BaseForecaster):
@@ -34,12 +83,22 @@ class RidgeForecaster(BaseForecaster):
         ])
         self._pipeline.fit(X_train, y_train)
         self.is_fitted = True
+        coefs = self._pipeline.named_steps["model"].coef_
+        self._fold_artifacts.append({"coef": dict(zip(X_train.columns, coefs))})
 
     def predict(self, X_test: Optional[pd.DataFrame] = None) -> pd.Series:
         assert self.is_fitted, "Model must be fit before predicting"
         assert X_test is not None, "RidgeForecaster requires X_test"
         preds = self._pipeline.predict(X_test)
         return pd.Series(preds, index=X_test.index)
+
+    def summarize_artifacts(self) -> dict:
+        if not self._fold_artifacts:
+            return {}
+        return {
+            "n_folds":      len(self._fold_artifacts),
+            "coefficients": self._agg_coef(self._fold_artifacts),
+        }
 
 
 class LassoForecaster(BaseForecaster):
@@ -65,11 +124,29 @@ class LassoForecaster(BaseForecaster):
         ])
         self._pipeline.fit(X_train, y_train)
         self.is_fitted = True
+        coefs = self._pipeline.named_steps["model"].coef_
+        self._fold_artifacts.append({"coef": dict(zip(X_train.columns, coefs))})
 
     def predict(self, X_test: Optional[pd.DataFrame] = None) -> pd.Series:
         assert self.is_fitted, "Model must be fit before predicting"
         assert X_test is not None, "LassoForecaster requires X_test"
         return pd.Series(self._pipeline.predict(X_test), index=X_test.index)
+
+    def summarize_artifacts(self) -> dict:
+        if not self._fold_artifacts:
+            return {}
+        feats = list(self._fold_artifacts[0]["coef"].keys())
+        # Selection frequency: fraction of folds where |coef| > 0 (Lasso produces
+        # exact zeros via coordinate descent; threshold matches sklearn's convention)
+        sel_freq = {
+            feat: float(np.mean([f["coef"][feat] != 0.0 for f in self._fold_artifacts]))
+            for feat in feats
+        }
+        return {
+            "n_folds":           len(self._fold_artifacts),
+            "coefficients":      self._agg_coef(self._fold_artifacts),
+            "selection_freq":    sel_freq,
+        }
 
 
 class RandomForestForecaster(BaseForecaster):
@@ -108,11 +185,20 @@ class RandomForestForecaster(BaseForecaster):
         )
         self._model.fit(X_train, y_train)
         self.is_fitted = True
+        self._fold_artifacts.append({
+            "importance": dict(zip(X_train.columns, self._model.feature_importances_))
+        })
 
     def predict(self, X_test: Optional[pd.DataFrame] = None) -> pd.Series:
         assert self.is_fitted, "Model must be fit before predicting"
         assert X_test is not None, "RandomForestForecaster requires X_test"
         return pd.Series(self._model.predict(X_test), index=X_test.index)
+
+    def summarize_artifacts(self) -> dict:
+        if not self._fold_artifacts:
+            return {}
+        agg = self._agg_importance(self._fold_artifacts)
+        return {"n_folds": len(self._fold_artifacts), "feature_importance": agg}
 
 
 class XGBoostForecaster(BaseForecaster):
@@ -149,11 +235,22 @@ class XGBoostForecaster(BaseForecaster):
         )
         self._model.fit(X_train, y_train)
         self.is_fitted = True
+        # gain importance: only features used in splits are returned.
+        # Fill the full feature list with 0 for absent features as requested.
+        raw = self._model.get_booster().get_score(importance_type="gain")
+        importance = {col: raw.get(col, 0.0) for col in X_train.columns}
+        self._fold_artifacts.append({"importance": importance})
 
     def predict(self, X_test: Optional[pd.DataFrame] = None) -> pd.Series:
         assert self.is_fitted, "Model must be fit before predicting"
         assert X_test is not None, "XGBoostForecaster requires X_test"
         return pd.Series(self._model.predict(X_test), index=X_test.index)
+
+    def summarize_artifacts(self) -> dict:
+        if not self._fold_artifacts:
+            return {}
+        agg = self._agg_importance(self._fold_artifacts)
+        return {"n_folds": len(self._fold_artifacts), "feature_importance": agg}
 
 
 class GradientBoostingForecaster(BaseForecaster):
@@ -191,8 +288,17 @@ class GradientBoostingForecaster(BaseForecaster):
         )
         self._model.fit(X_train, y_train)
         self.is_fitted = True
+        self._fold_artifacts.append({
+            "importance": dict(zip(X_train.columns, self._model.feature_importances_))
+        })
 
     def predict(self, X_test: Optional[pd.DataFrame] = None) -> pd.Series:
         assert self.is_fitted, "Model must be fit before predicting"
         assert X_test is not None, "GradientBoostingForecaster requires X_test"
         return pd.Series(self._model.predict(X_test), index=X_test.index)
+
+    def summarize_artifacts(self) -> dict:
+        if not self._fold_artifacts:
+            return {}
+        agg = self._agg_importance(self._fold_artifacts)
+        return {"n_folds": len(self._fold_artifacts), "feature_importance": agg}

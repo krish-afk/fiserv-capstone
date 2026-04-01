@@ -117,7 +117,7 @@ def main():
         run_data_stage()
 
     if args.stage in ("all", "experiment"):
-        y, X, _ = load_panel(args.panel)  # y_level unused until trading stage
+        y, X, _ = load_panel(args.panel)    # y_level unused until trading stage
         summary_df = run_experiment_stage(y, X, args.panel)
 
     # if args.stage in ("all", "trading") and not args.skip_trading:

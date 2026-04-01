@@ -216,14 +216,21 @@ experiment:
           name: ets_add
           params: {trend: add, seasonal: null}
           feature_sets: [none]
-        - class: ETSForecaster
-          name: ets_add_mul
-          params: {trend: add, seasonal: mul, seasonal_periods: 12}
-          feature_sets: [none]
+        - class: ETSXForecaster
+          name: est_x_holt_damped
+          params: {trend: add, damped_trend: true}
+          feature_sets: [fsbi_lags, macro_lags]
+        - class: ThetaForecaster
+          name: theta_nodeseas
+          params: {deseasonalize: false}        # if target is MoM: {deseasonalize: false}
+                                                # if target is level or YoY: {deseasonalize: true, periods: 12}
+          feature_sets: [fsbi_lags, macro_lags]
 
     ml:
       enabled: true
       variants:
+        - class: OLSForecaster
+          feature_sets: [fsbi_lags, macro_lags]
         - class: RidgeForecaster
           param_grid:
             alpha: [0.01, 0.1, 1.0, 10.0, 100.0]

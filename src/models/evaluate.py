@@ -8,17 +8,33 @@ def compute_metrics(y_true: pd.Series, y_pred: pd.Series) -> Dict[str, float]:
     Compute standard forecast error metrics.
 
     Args:
-        y_true: Actual PCE values
+        y_true: Actual PCE values (MoM %, YoY %, or level depending on panel)
         y_pred: Forecasted PCE values
     Returns:
         Dictionary of metric name -> value
     """
-    # TODO: Add MAPE, but handle division-by-zero if PCE values near 0
     errors = y_true - y_pred
+
+    # MAPE: clip denominator to avoid division by zero on near-zero MoM% values
+    denom = y_true.abs().clip(lower=1e-8)
+    mape = (errors.abs() / denom).mean()
+
+    # Directional accuracy: fraction of periods where sign of y_pred matches sign of y_true
+    # For MoM% targets this is "did we call the direction of PCE change correctly?"
+    dir_acc = float((np.sign(y_true) == np.sign(y_pred)).mean())
+
+    # R²: negative values are valid (model worse than naive mean)
+    ss_res = float((errors ** 2).sum())
+    ss_tot = float(((y_true - y_true.mean()) ** 2).sum())
+    r2 = (1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
+
     return {
-        "rmse": np.sqrt((errors ** 2).mean()),
-        "mae": np.abs(errors).mean(),
-        "me":  errors.mean(),  # Mean error — useful for bias detection
+        "rmse":    float(np.sqrt((errors ** 2).mean())),
+        "mae":     float(np.abs(errors).mean()),
+        "me":      float(errors.mean()),
+        "mape":    float(mape),
+        "dir_acc": dir_acc,
+        "r2":      r2,
     }
 
 def walk_forward_evaluate(

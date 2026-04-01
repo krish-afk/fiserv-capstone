@@ -117,12 +117,45 @@ features:
   rolling_windows: [3, 6, 12]
   growth_rates: true
 
-  # Named feature subsets for config-driven experiments.
-  # Populate after EDA. Keys are set names; values are lists of column names
-  # from the full feature matrix (post build_all_features). Models that don't
-  # use a named subset receive the full feature matrix and apply their own
-  # selection routine (LASSO, greedy, etc.) in the experiment loop.
-  feature_sets: {}    # e.g. baseline_macro: ["cpi_lag1", "unemployment_rate_lag1", ...]
+  # Named feature subsets used by the experiment grid.
+  # Values are fnmatch glob patterns matched against X.columns
+  # (post build_all_features). An empty list signals X=None (pure time-series).
+  feature_sets:
+    none: []                    # Pass X=None — for pure time-series models
+    all_features: ["*"]         # Full feature matrix, unfiltered
+    fsbi_lags:                  # FSBI-only: lags and rolling stats
+      - "fsbi_*_lag*"
+      - "fsbi_*_rollmean*"
+      - "fsbi_*_rollstd*"
+    macro_lags:                 # Lagged FRED macro series only (no FSBI)
+      - "cpi_lag*"
+      - "fed_funds_rate_lag*"
+      - "gdp_lag*"
+      - "consumer_sentiment_lag*"
+      - "credit_spread_baa_lag*"
+      - "treasury_10y_lag*"
+      - "crude_oil_wti_lag*"
+      - "real_disposable_income_lag*"
+      - "unemployment_rate_lag*"
+      - "jolts_quits_rate_lag*"
+      - "natural_gas_price_lag*"
+      - "import_price_index_lag*"
+    fsbi_and_macro_lags:        # Union of fsbi_lags + macro_lags
+      - "fsbi_*_lag*"
+      - "fsbi_*_rollmean*"
+      - "fsbi_*_rollstd*"
+      - "cpi_lag*"
+      - "fed_funds_rate_lag*"
+      - "gdp_lag*"
+      - "consumer_sentiment_lag*"
+      - "credit_spread_baa_lag*"
+      - "treasury_10y_lag*"
+      - "crude_oil_wti_lag*"
+      - "real_disposable_income_lag*"
+      - "unemployment_rate_lag*"
+      - "jolts_quits_rate_lag*"
+      - "natural_gas_price_lag*"
+      - "import_price_index_lag*"
 
 transforms:
   scaling: "standard"                 # "standard", "minmax", or null
@@ -132,8 +165,93 @@ forecasting:
   horizons: [1]            # Primary; extend to [1, 3, 6] for multi-step
   walk_forward_min_train: 36  # Minimum observations before first forecast
 
-models:
-  run: ["baseline", "timeseries", "ml"]  # Toggle families on/off
+# ---------------------------------------------------------------------------
+# Experiment grid — fully specifies every trial to run.
+#
+# Adding a new model, hyperparameter variant, feature set, or panel requires
+# only a change here; no Python code changes needed.
+#
+# Schema per variant:
+#   class:       Model class name (must exist in experiment._MODEL_REGISTRY)
+#   name:        Optional display label — only for single-params variants
+#   params:      Fixed constructor kwargs (mutually exclusive with param_grid)
+#   param_grid:  Dict of {kwarg: [values]} — expanded into one trial per combo
+#   feature_sets: List of feature set names from features.feature_sets above
+# ---------------------------------------------------------------------------
+experiment:
+  panels:
+    - pce_national_mom          # Primary target: PCE MoM %
+
+  models:
+    baseline:
+      enabled: true
+      variants:
+        - class: NaiveForecaster
+          feature_sets: [none]
+        - class: MeanForecaster
+          feature_sets: [none]
+
+    timeseries:
+      enabled: true
+      variants:
+        - class: ARIMAForecaster
+          name: arima_110
+          params: {order: [1, 1, 0]}
+          feature_sets: [none]
+        - class: ARIMAForecaster
+          name: arima_111
+          params: {order: [1, 1, 1]}
+          feature_sets: [none]
+        - class: ARIMAXForecaster
+          name: arimax_111_fsbi
+          params: {order: [1, 1, 1]}
+          feature_sets: [fsbi_lags]
+        - class: ARIMAXForecaster
+          name: arimax_111_macro
+          params: {order: [1, 1, 1]}
+          feature_sets: [macro_lags]
+        - class: ETSForecaster
+          name: ets_add
+          params: {trend: add, seasonal: null}
+          feature_sets: [none]
+        - class: ETSForecaster
+          name: ets_add_mul
+          params: {trend: add, seasonal: mul, seasonal_periods: 12}
+          feature_sets: [none]
+
+    ml:
+      enabled: true
+      # ML models must apply StandardScaler per fold internally (inside fit()).
+      # Use sklearn.pipeline.Pipeline([('scaler', StandardScaler()), ('model', ...)]).
+      variants:
+        - class: RidgeForecaster
+          param_grid:
+            alpha: [0.01, 0.1, 1.0, 10.0, 100.0]
+          feature_sets: [fsbi_lags, macro_lags, fsbi_and_macro_lags, all_features]
+        - class: LassoForecaster
+          param_grid:
+            alpha: [0.001, 0.01, 0.1, 1.0]
+          feature_sets: [all_features]
+        - class: RandomForestForecaster
+          param_grid:
+            n_estimators: [100]
+            max_depth: [3, 5, null]
+            min_samples_leaf: [2, 5]
+          feature_sets: [fsbi_and_macro_lags, all_features]
+        - class: XGBoostForecaster
+          param_grid:
+            n_estimators: [100, 300]
+            learning_rate: [0.01, 0.05]
+            max_depth: [2, 3]
+            subsample: [0.8]
+            colsample_bytree: [0.8]
+          feature_sets: [fsbi_and_macro_lags, all_features]
+        - class: GradientBoostingForecaster
+          param_grid:
+            n_estimators: [100]
+            learning_rate: [0.05, 0.1]
+            max_depth: [2, 3]
+          feature_sets: [fsbi_and_macro_lags, all_features]
 
 logging:
   level: "INFO"

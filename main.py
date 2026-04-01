@@ -9,10 +9,7 @@ from src.data.load import load_all_raw
 from src.data.clean import run_cleaning
 from src.data.store import write_master, write_fsbi
 from src.data.panel import build_panel
-# from src.models.baselines import NaiveForecaster, MeanForecaster
-# from src.models.timeseries import ARIMAForecaster, ETSForecaster
-# from src.models.ml import RidgeForecaster, XGBoostForecaster
-# from src.models.experiment import run_experiment
+from src.models.experiment import build_trial_grid, run_experiment
 # from src.trading.strategy import (
 #     load_best_forecasts, select_best_model,
 #     generate_signals, save_signals
@@ -55,35 +52,31 @@ def run_data_stage(panel_name: str = "pce_national_mom"):
     return y, X, y_level
 
 
-# def run_experiment_stage(y: pd.Series,
-#                          X: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-#     """Define models and feature sets, run all trials."""
-#     print("\n[STAGE 2] Model experimentation")
+def run_experiment_stage(
+    y: pd.Series,
+    X: pd.DataFrame,
+    panel_name: str,
+) -> pd.DataFrame:
+    """
+    Config-driven experiment stage. Reads the full trial grid from
+    config.yaml (experiment.models, features.feature_sets) and runs
+    walk-forward evaluation across all combinations.
 
-#     models = [
-#         NaiveForecaster(horizon=1),
-#         MeanForecaster(horizon=1),
-#         ARIMAForecaster(order=(1, 1, 1), horizon=1),
-#         ETSForecaster(horizon=1),
-#         RidgeForecaster(alpha=1.0, horizon=1),
-#         XGBoostForecaster(horizon=1),
-#         # TODO: add remaining model variants here
-#     ]
+    To add a model variant, hyperparameter setting, feature set, or panel:
+    edit config.yaml only — no code changes needed.
 
-#     feature_sets = {
-#         "none":          None,          # For pure time-series models
-#         # "handpicked_v1"(X),   # TODO remove
-#         "all_features":  X,
-#         # TODO: add pca_reduced, lasso_selected once implemented
-#     }
+    To run multiple panels in one call, build a panels_data dict in main()
+    and pass it directly to build_trial_grid() + run_experiment().
+    """
+    print("\n[STAGE 2] Model experimentation")
 
-#     horizon        = config["forecasting"]["horizons"][0]
-#     min_train_size = config["forecasting"]["walk_forward_min_train"]
+    horizon        = config["forecasting"]["horizons"][0]
+    min_train_size = config["forecasting"]["walk_forward_min_train"]
 
-#     summary_df = run_experiment(
-#         models, feature_sets, y, min_train_size, horizon
-#     )
-#     return summary_df
+    panels_data = {panel_name: (y, X)}
+    trials      = build_trial_grid(config, panels_data)
+
+    return run_experiment(trials, min_train_size, horizon)
 
 
 # def run_trading_stage(summary_df: pd.DataFrame):
@@ -111,8 +104,8 @@ def main():
     if args.stage in ("all", "data"):
         y, X, y_level = run_data_stage(args.panel)
 
-    # if args.stage in ("all", "experiment"):
-    #     summary_df = run_experiment_stage(y, X)
+    if args.stage in ("all", "experiment"):
+        summary_df = run_experiment_stage(y, X, args.panel)
 
     # if args.stage in ("all", "trading") and not args.skip_trading:
     #     run_trading_stage(summary_df)

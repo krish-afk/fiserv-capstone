@@ -223,6 +223,7 @@ def run_experiment(
     all_forecasts = []
 
     for trial in trials:
+        print(f"[INFO] Running Experiment - Trial {trials.index(trial) + 1} / {len(trials)}")
         try:
             preds = walk_forward_evaluate(
                 trial.model, trial.y, trial.X, min_train_size, horizon
@@ -281,6 +282,6 @@ def run_experiment(
           f"Results written to {exp_dir}")
     display_cols = ["panel_name", "model_name", "feature_set", "mae", "rmse", "dir_acc"]
     available = [c for c in display_cols if c in summary_df.columns]
-    print(summary_df[available].to_string(index=False))
+    # print(summary_df[available].to_string(index=False))   # commented out; too much printing output
 
     return summary_df

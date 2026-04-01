@@ -15,11 +15,11 @@ data:
   date_col: "date"
   frequency: "MS"
   start_date: "2019-01-01"
-  end_date: "2026-01-01"
+  end_date: "2026-02-01"
   max_retries: 3
   sleep_between: 0.7
-  train_end: "2022-12-01"
-  test_start: "2023-01-01"
+  train_end: "2024-01-01"
+  test_start: "2025-07-01"
 
   sources:
     bea:
@@ -35,18 +35,20 @@ data:
       # Keys are FRED series IDs; values are the column names used throughout the pipeline.
       # ingest.py fetches by ID and renames; all downstream code uses the snake_case names.
       series:
-        CPIAUCSL:   "cpi"                    # Consumer Price Index, all urban consumers
+        # monetary
         FEDFUNDS:   "fed_funds_rate"          # Effective federal funds rate
-        GDP:        "gdp"                     # Real GDP (quarterly → forward-filled to monthly)
-        UMCSENT:    "consumer_sentiment"      # U of Michigan Consumer Sentiment
         BAA10Y:     "credit_spread_baa"       # Moody's Baa - 10Y Treasury spread
         GS10:       "treasury_10y"            # 10-Year Treasury constant maturity rate
+        # commodity
         DCOILWTICO: "crude_oil_wti"           # WTI crude oil spot price (daily → monthly)
-        IR:         "import_price_index"      # Import price index, all commodities
-        W875RX1:    "real_disposable_income"  # Real disposable personal income per capita
-        JTSQUR:     "jolts_quits_rate"        # JOLTS quits rate (total non-farm)
-        UNRATE:     "unemployment_rate"       # Civilian unemployment rate
         MHHNGSP:    "natural_gas_price"       # Henry Hub natural gas composite price
+        IR:         "import_price_index"      # Import price index, all commodities
+        # labor/consumer
+        UNRATE:     "unemployment_rate"       # Civilian unemployment rate
+        JTSQUR:     "jolts_quits_rate"        # JOLTS quits rate (total non-farm)
+        W875RX1:    "real_disposable_income"  # Real disposable personal income per capita
+        UMCSENT:    "consumer_sentiment"      # U of Michigan Consumer Sentiment
+        STICKCPIM157SFRBATL:  "sticky_cpi"    # sticky cpi percent change
     fsbi:
       type: "csv"
       filename: "fsbi_raw.csv"        # Pre-downloaded, lives in data/raw/

@@ -1,8 +1,8 @@
 # src/data/features.py
 import pandas as pd
-import numpy as np
-from typing import List, Optional
+from typing import List
 from src.utils.config import config
+
 
 def build_lag_features(df: pd.DataFrame, col: str, lags: List[int]) -> pd.DataFrame:
     """
@@ -18,7 +18,6 @@ def build_lag_features(df: pd.DataFrame, col: str, lags: List[int]) -> pd.DataFr
     df = df.copy()
     for lag in lags:
         df[f"{col}_lag{lag}"] = df[col].shift(lag)
-    # TODO: consider whether to drop NaN rows here or leave to caller
     return df
 
 
@@ -51,70 +50,81 @@ def build_growth_rate(df: pd.DataFrame, col: str) -> pd.DataFrame:
     return df
 
 
-def build_handpicked_v1(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    First handpicked feature set.
-    TODO: define which columns to select based on EDA findings
-    """
-    cols = []  # TODO: populate with selected column names
-    return df[cols].copy()
-
-
-def build_handpicked_v2(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Second handpicked feature set.
-    TODO: define alternative column selection
-    """
-    cols = []  # TODO: populate with selected column names
-    return df[cols].copy()
-
-
-def build_pca_features(df: pd.DataFrame,
-                        n_components: int = 5) -> pd.DataFrame:
-    """
-    Reduce feature matrix to n_components via PCA.
-
-    IMPORTANT: PCA must be fit only on training data in walk-forward
-    evaluation to avoid lookahead bias. This function is for building
-    the static feature matrix only — fit/transform happens in the
-    experiment loop.
-    TODO: implement fit/transform split for walk-forward compliance
-    """
-    # TODO: implement using sklearn.decomposition.PCA
-    pass
-
-
-def build_lasso_selected(df: pd.DataFrame, y: pd.Series,
-                          alpha: float = 0.01) -> pd.DataFrame:
-    """
-    Return feature subset surviving LassoCV selection.
-    Same lookahead caveat as PCA — fit only on training data.
-    TODO: implement walk-forward compliant version
-    """
-    # TODO: implement using sklearn.linear_model.LassoCV
-    pass
-
-
 def build_all_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Master feature builder — applies all transformations and
-    returns the full feature matrix. Individual feature sets
-    are then selected as subsets of this.
+    Master feature builder — applies all transformations and returns the full
+    feature matrix. panel.py selects named subsets or passes the full matrix
+    to models that do their own selection.
+
+    Column treatment:
+      - Target columns (pce, mrts): excluded entirely — never lagged or rolled.
+        Which target is used in a given experiment is set per-panel in config.
+      - FSBI columns (fsbi_*): lags + rolling stats only. FSBI already contains
+        native MoM/YoY % columns, so growth rates would be redundant.
+      - All other columns (FRED macro, USCB): lags + rolling stats + growth rates.
+
+    Lags and windows are read from config — no hardcoded values here.
 
     Args:
-        df: Preprocessed DataFrame containing PCE, FSBI, and
-            any other macroeconomic columns
+        df: Master DataFrame from store.read_master() — wide format, date-indexed.
     Returns:
-        Full feature matrix, date-indexed, NaN rows dropped
+        Full feature matrix with engineered columns appended; NaN rows dropped.
     """
-    target = config["data"]["target"]
+    targets = config["data"]["targets"]   # list of all potential target column names
+    lags    = config["features"]["lags"]
+    windows = config["features"]["rolling_windows"]
 
-    df = build_lag_features(df, col=target, lags=[1, 3, 6, 12])
-    df = build_rolling_features(df, col=target, windows=[3, 6, 12])
-    df = build_growth_rate(df, col=target)
+    fsbi_cols = [c for c in df.columns if c.startswith("fsbi_")]
+    # Non-target, non-FSBI columns (FRED macro, USCB, etc.)
+    other_cols = [
+        c for c in df.columns
+        if c not in targets and not c.startswith("fsbi_")
+    ]
 
-    # TODO: apply same transformations to FSBI columns
-    # TODO: add any interaction terms identified during EDA
+    # FSBI features — lags and rolling only
+    for col in fsbi_cols:
+        df = build_lag_features(df, col=col, lags=lags)
+        df = build_rolling_features(df, col=col, windows=windows)
+
+    # Macro / other features — lags, rolling, and growth rates
+    for col in other_cols:
+        df = build_lag_features(df, col=col, lags=lags)
+        df = build_rolling_features(df, col=col, windows=windows)
+        df = build_growth_rate(df, col=col)
 
     df = df.dropna()
     return df
+
+
+def build_named_subset(df: pd.DataFrame, name: str) -> pd.DataFrame:
+    """
+    Return the subset of the feature matrix defined by a named feature set
+    in config.yaml under features.feature_sets.<name>.
+
+    This is the data-layer hook for config-driven feature selection. Models
+    that instead do algorithmic selection (LASSO, greedy, PCA, etc.) receive
+    the full matrix from build_all_features() and perform selection internally
+    within the experiment loop — that logic does NOT belong here.
+
+    Args:
+        df: Full feature matrix from build_all_features()
+        name: Key in config["features"]["feature_sets"]
+    Returns:
+        DataFrame containing only the columns in the named set
+    Raises:
+        KeyError: if the name is not defined in config
+        ValueError: if any configured column is absent from df
+    """
+    feature_sets = config["features"].get("feature_sets", {})
+    if name not in feature_sets:
+        raise KeyError(
+            f"Feature set '{name}' not found in config. "
+            f"Available sets: {list(feature_sets.keys())}"
+        )
+    cols = feature_sets[name]
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"Feature set '{name}' references columns not in the feature matrix: {missing}"
+        )
+    return df[cols].copy()

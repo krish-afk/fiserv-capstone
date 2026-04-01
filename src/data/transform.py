@@ -4,6 +4,61 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from src.utils.config import config
 
+_VALID_TRANSFORMS = {"mom", "yoy", None}
+
+
+def transform_target(y: pd.Series, method: str) -> pd.Series:
+    """
+    Apply a growth-rate transformation to the target series.
+
+    Args:
+        y: Raw target level series (e.g. PCE in billions of dollars)
+        method: "mom" (month-over-month %), "yoy" (year-over-year %),
+                or None (return y unchanged)
+    Returns:
+        Transformed series with leading NaN rows from pct_change dropped:
+          - None: unchanged, same length as input
+          - "mom": 1 leading row dropped
+          - "yoy": 12 leading rows dropped
+        The caller (panel.py) is responsible for aligning X to match.
+    """
+    if method not in _VALID_TRANSFORMS:
+        raise ValueError(
+            f"Unknown target_transform '{method}'. "
+            f"Valid options: {_VALID_TRANSFORMS}"
+        )
+    if method is None:
+        return y
+    periods = 1 if method == "mom" else 12
+    return y.pct_change(periods).dropna()
+
+
+def inverse_transform_target(
+    y_pred: pd.Series,
+    y_lag: pd.Series,
+    method: str,
+) -> pd.Series:
+    """
+    Reconstruct predicted levels from predicted growth rates.
+    Use this in the evaluation stage to compute level-space error metrics.
+
+    Args:
+        y_pred: Predicted growth rates aligned to the forecast index
+                (as decimals, e.g. 0.003 not 0.3%)
+        y_lag:  Lagged actual levels aligned to y_pred's index.
+                For "mom": the actual level shifted by 1 period.
+                For "yoy": the actual level shifted by 12 periods.
+                Available from the y_level return value of panel.build_panel().
+        method: The same method passed to transform_target()
+    Returns:
+        Predicted levels on the same index as y_pred
+    """
+    if method is None:
+        return y_pred
+    if method not in {"mom", "yoy"}:
+        raise ValueError(f"Unknown target_transform '{method}'")
+    return y_lag * (1 + y_pred)
+
 
 def difference_series(df: pd.DataFrame, order: int = 1) -> pd.DataFrame:
     """

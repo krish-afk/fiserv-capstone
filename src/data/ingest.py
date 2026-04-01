@@ -70,6 +70,7 @@ def fetch_bea() -> Path:
     cfg         = config["data"]["sources"]["bea"]
     table_name  = cfg["table_name"]
     line_number = cfg["line_number"]
+    series_name = cfg["series_name"]
     out_path    = _make_raw_path("bea")
 
     raw = _fetch_with_retry(_call_bea, label=f"BEA {table_name}")
@@ -84,7 +85,7 @@ def fetch_bea() -> Path:
         value = pd.to_numeric(r["DataValue"].replace(",", ""), errors="coerce")
         if pd.isna(value):
             continue
-        rows.append({"date": pd.to_datetime(r["TimePeriod"], format="%YM%m"), "value": value})
+        rows.append({"date": pd.to_datetime(r["TimePeriod"], format="%YM%m"), series_name: value})
 
     df = pd.DataFrame(rows)
     df = df[(df["date"] >= START_DATE) & (df["date"] <= END_DATE)]
@@ -95,27 +96,28 @@ def fetch_bea() -> Path:
     return out_path
 
 
-def fetch_fred(series: list = None) -> Path:
+def fetch_fred(series: dict = None) -> Path:
     """
     Pull macroeconomic indicators from FRED and write to data/raw/.
 
     Args:
-        series: List of FRED series IDs; defaults to config value
+        series: Dict of {FRED_series_id: column_name}; defaults to config value.
+                Column names are the snake_case names used throughout the pipeline.
     Returns:
         Path to written CSV file
     """
-    series   = series or config["data"]["sources"]["fred"]["series"]
-    out_path = _make_raw_path("fred")
+    series_cfg = series or config["data"]["sources"]["fred"]["series"]
+    out_path   = _make_raw_path("fred")
 
     fred = Fred(api_key=os.environ["FRED_API_KEY"])
 
     frames = []
-    for sid in series:
+    for sid, col_name in series_cfg.items():
         result = _fetch_with_retry(
-            lambda s=sid: fred.get_series(
+            lambda s=sid, n=col_name: fred.get_series(
                 s, observation_start=START_DATE, observation_end=END_DATE
-            ).rename(s),
-            label=f"FRED {sid}",
+            ).rename(n),
+            label=f"FRED {sid} → {col_name}",
         )
         if result is not None:
             frames.append(result)
@@ -130,23 +132,28 @@ def fetch_fred(series: list = None) -> Path:
     df = df.sort_index().reset_index()
     df.to_csv(out_path, index=False)
 
-    print(f"[INFO] FRED data written to {out_path}")
+    print(f"[INFO] FRED data written to {out_path} ({len(frames)} series)")
     return out_path
 
 
 def _call_uscb():
+    series_name = config["data"]["sources"]["uscb"]["series_name"]
     start_ym = pd.to_datetime(START_DATE).strftime("%Y-%m")
     end_ym   = pd.to_datetime(END_DATE).strftime("%Y-%m")
-    resp = requests.get(
-        "https://api.census.gov/data/timeseries/eits/marts",
-        params={
-            "get": "cell_value,time_slot_id,category_code,seasonally_adj",
-            "time": f"from {start_ym} to {end_ym}",
-            "for": "us:*",
-            "key": os.environ["CENSUS_API_KEY"],
-        },
-        timeout=30,
-    )
+    params = {
+        "get": "cell_value,time_slot_id,category_code,seasonally_adj,data_type_code",
+        "time": f"from {start_ym} to {end_ym}",
+        "key": os.environ["USCB_API_KEY"],
+    }
+    url = f"https://api.census.gov/data/timeseries/eits/{series_name}"
+    # Reconstruct URL with key masked for safe logging
+    safe_params = {k: ("***" if k == "key" else v) for k, v in params.items()}
+    safe_url = requests.Request("GET", url, params=safe_params).prepare().url
+    print(f"[DEBUG] USCB request URL: {safe_url}")
+    resp = requests.get(url, params=params, timeout=30)
+    print(f"[DEBUG] USCB response status: {resp.status_code}")
+    if not resp.ok:
+        print(f"[DEBUG] USCB response body: {resp.text[:500]}")
     resp.raise_for_status()
     return resp.json()
 
@@ -160,6 +167,8 @@ def fetch_uscb() -> Path:
     """
     cfg            = config["data"]["sources"]["uscb"]
     category_code  = str(cfg.get("category_code", "44000"))
+    data_type_code = cfg.get("data_type_code", "SM")
+    series_name    = cfg.get("series_name", "mrts")
     seasonally_adj = cfg.get("seasonally_adj", "no")
     out_path       = _make_raw_path("uscb")
 
@@ -171,13 +180,14 @@ def fetch_uscb() -> Path:
     df = pd.DataFrame(rows, columns=headers)
     df = df[
         (df["category_code"] == category_code)
+        & (df["data_type_code"] == data_type_code)
         & (df["seasonally_adj"] == seasonally_adj)
-        & (df["time_slot_id"] == "M")   # "M" = monthly value; excludes CV rows
+        & (df["time_slot_id"] == "0")   # "0" = monthly estimate; confirmed from API discovery
     ]
 
-    df = df.rename(columns={"cell_value": "value", "time": "date"})[["date", "value"]]
-    df["date"]  = pd.to_datetime(df["date"])
-    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    df = df.rename(columns={"cell_value": series_name, "time": "date"})[["date", series_name]]
+    df["date"] = pd.to_datetime(df["date"])
+    df[series_name] = pd.to_numeric(df[series_name], errors="coerce")
     df = df.sort_values("date").reset_index(drop=True)
     df.to_csv(out_path, index=False)
 
@@ -207,6 +217,7 @@ def run_ingestion() -> dict[str, Path]:
     Master ingestion runner. Calls all source fetchers and returns
     a dict of {source_name: raw_csv_path}.
     """
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
     paths = {}
     paths["bea"]  = fetch_bea()
     paths["fred"] = fetch_fred()

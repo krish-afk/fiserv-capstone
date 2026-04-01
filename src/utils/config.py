@@ -1,6 +1,12 @@
 # src/utils/config.py
 import yaml
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env into os.environ before any module reads API keys.
+# override=False means existing environment variables (e.g. set in CI/CD
+# or a shell export) take precedence over the .env file.
+load_dotenv(override=False)
 
 # TODO: Consider making this an explicit argument rather than 
 # auto-discovering, if you want to support multiple config files

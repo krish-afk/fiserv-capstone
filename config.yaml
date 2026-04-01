@@ -7,11 +7,15 @@ paths:
   experiments: "experiments/"
 
 data:
-  target: "pce"
+  # All potential prediction targets. Both live in the master dataset.
+  # Feature engineering excludes every column in this list — targets are
+  # never lagged or rolled. Which target a given experiment uses is set
+  # per-panel below (panels.<name>.target).
+  targets: ["pce", "mrts"]
   date_col: "date"
   frequency: "MS"
-  start_date: "2010-01-01"
-  end_date: "2024-12-01"
+  start_date: "2019-01-01"
+  end_date: "2026-01-01"
   max_retries: 3
   sleep_between: 0.7
   train_end: "2022-12-01"
@@ -23,17 +27,35 @@ data:
       data_set: "NIPA"
       table_name: "T20805"     # NIPA: PCE monthly, not seasonally adjusted (T20804 = SA)
       line_number: 1           # Line 1 = total PCE
+      series_name: "pce"
       frequency: "M"
       year: "ALL"
     fred:
       type: "api"
-      series: ["CPIAUCSL", "FEDFUNDS", "GDP"]
+      # Keys are FRED series IDs; values are the column names used throughout the pipeline.
+      # ingest.py fetches by ID and renames; all downstream code uses the snake_case names.
+      series:
+        CPIAUCSL:   "cpi"                    # Consumer Price Index, all urban consumers
+        FEDFUNDS:   "fed_funds_rate"          # Effective federal funds rate
+        GDP:        "gdp"                     # Real GDP (quarterly → forward-filled to monthly)
+        UMCSENT:    "consumer_sentiment"      # U of Michigan Consumer Sentiment
+        BAA10Y:     "credit_spread_baa"       # Moody's Baa - 10Y Treasury spread
+        GS10:       "treasury_10y"            # 10-Year Treasury constant maturity rate
+        DCOILWTICO: "crude_oil_wti"           # WTI crude oil spot price (daily → monthly)
+        IR:         "import_price_index"      # Import price index, all commodities
+        W875RX1:    "real_disposable_income"  # Real disposable personal income per capita
+        JTSQUR:     "jolts_quits_rate"        # JOLTS quits rate (total non-farm)
+        UNRATE:     "unemployment_rate"       # Civilian unemployment rate
+        MHHNGSP:    "natural_gas_price"       # Henry Hub natural gas composite price
     fsbi:
       type: "csv"
       filename: "fsbi_raw.csv"        # Pre-downloaded, lives in data/raw/
+      national_geo: "US"              # Geo value used when panel geography is null
     uscb:
       type: "api"
       category_code: "44000"   # NAICS 44-45: total retail trade
+      data_type_code: "SM"     # Sales, Monthly (SM); E_SM = associated error estimates
+      series_name: "mrts"
       seasonally_adj: "no"
 
   alignment:
@@ -41,23 +63,66 @@ data:
     max_fill_periods: 3               # Don't ffill more than N periods
 
   panels:
-    national:
-      geography: null                 # null = no geographic filter
-      sectors: null                   # null = all sectors
-    california:
+    pce_national:
+      target: "pce"
+      target_transform: null          # predict the level
+      geography: ["US"]                 # US = national filter
+      sectors: ["ALL"]                   # null = all sectors
+      subsectors: ["ALL"]
+    pce_national_mom:
+      target: "pce"
+      target_transform: "mom"         # predict MoM %
+      geography: ["US"]
+      sectors: ["ALL"]
+      subsectors: ["ALL"]
+    pce_national_yoy:
+      target: "pce"
+      target_transform: "yoy"         # predict YoY %
+      geography: ["US"]
+      sectors: ["ALL"]
+      subsectors: ["ALL"]
+    pce_california:
+      target: "pce"
+      target_transform: null
       geography: ["CA"]
-      sectors: null
-    california_retail:
+      sectors: ["ALL"]
+      subsectors: ["ALL"]
+    pce_california_retail:
+      target: "pce"
+      target_transform: null
       geography: ["CA"]
-      sectors: ["retail"]
-    national_retail:
-      geography: null
-      sectors: ["retail"]
+      sectors: ["Retail Trade"]
+      subsectors: ["ALL"]
+    pce_california_retail_foodbev:
+      target: "pce"
+      target_transform: null
+      geography: ["CA"]
+      sectors: ["Retail Trade"]
+      subsectors: ["Food and Beverage Retailers"]
+    mrts_national:
+      target: "mrts"
+      target_transform: null
+      geography: ["US"]
+      sectors: ["ALL"]
+      subsectors: ["ALL"]
+    mrts_atlanta_metro_mom:
+      target: "mrts"
+      target_transform: "mom"
+      geography: ["Atlanta-Sandy Springs-Alpharetta GA"]
+      sectors: ["ALL"]
+      subsectors: ["ALL"]
 
 features:
   lags: [1, 3, 6, 12]
   rolling_windows: [3, 6, 12]
   growth_rates: true
+
+  # Named feature subsets for config-driven experiments.
+  # Populate after EDA. Keys are set names; values are lists of column names
+  # from the full feature matrix (post build_all_features). Models that don't
+  # use a named subset receive the full feature matrix and apply their own
+  # selection routine (LASSO, greedy, etc.) in the experiment loop.
+  feature_sets: {}    # e.g. baseline_macro: ["cpi_lag1", "unemployment_rate_lag1", ...]
 
 transforms:
   scaling: "standard"                 # "standard", "minmax", or null

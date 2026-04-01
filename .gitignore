@@ -35,7 +35,7 @@ data/
 !src/data/**
 
 # Outputs
-results/
+experiments/
 logs/
 *.log
 
@@ -46,9 +46,6 @@ logs/
 models/ensemble/Archive/
 models/ensemble/results/
 __pycache__/
-
-
-
 
 
 

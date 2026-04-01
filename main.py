@@ -38,18 +38,30 @@ def parse_args():
     return parser.parse_args()
 
 
-def run_data_stage(panel_name: str = "pce_national_mom"):
-    """Load, process, and return a (y, X) panel."""
-    print("\n[STAGE 1] Data loading & preprocessing")
-
+def run_data_stage():
+    """
+    Ingest raw sources, clean, and write processed data to disk.
+    Only call when data needs to be (re)built — i.e. --stage data or --stage all.
+    """
+    print("\n[STAGE 1] Data ingestion & processing")
     ingested          = run_ingestion()
     raw_dfs           = load_all_raw(ingested)
     master, fsbi_long = run_cleaning(raw_dfs)
     write_master(master)
     write_fsbi(fsbi_long)
 
-    y, X, y_level = build_panel(panel_name)
-    return y, X, y_level
+
+def load_panel(panel_name: str) -> tuple[pd.Series, pd.DataFrame, pd.Series]:
+    """
+    Build (y, X, y_level) for the named panel by reading processed data from disk.
+    Raises FileNotFoundError (via build_panel) if data/processed/ is empty —
+    run --stage data first to populate it.
+
+    Called unconditionally before the experiment stage, regardless of whether
+    --stage data was also invoked in this run.
+    """
+    print(f"\n[PANEL] Building panel '{panel_name}' from disk")
+    return build_panel(panel_name)
 
 
 def run_experiment_stage(
@@ -102,9 +114,10 @@ def main():
     args = parse_args()
 
     if args.stage in ("all", "data"):
-        y, X, y_level = run_data_stage(args.panel)
+        run_data_stage()
 
     if args.stage in ("all", "experiment"):
+        y, X, _ = load_panel(args.panel)  # y_level unused until trading stage
         summary_df = run_experiment_stage(y, X, args.panel)
 
     # if args.stage in ("all", "trading") and not args.skip_trading:

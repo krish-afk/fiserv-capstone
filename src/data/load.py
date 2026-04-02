@@ -90,6 +90,29 @@ def load_fsbi(path: Path = None) -> pd.DataFrame:
     return df
 
 
+def load_market_data(path: Path = None) -> pd.DataFrame:
+    """
+    Load raw market OHLCV data written by ingest.fetch_market_data().
+
+    Returns a date-indexed DataFrame with flat column names:
+        {ticker}_open | {ticker}_high | {ticker}_low | {ticker}_close | {ticker}_volume
+
+    Source-agnostic: the same schema is produced regardless of whether the data
+    came from yfinance, Alpha Vantage, or a local CSV.  To add a new source,
+    update ingest.py to write in this schema.
+
+    Args:
+        path: Explicit path to the market CSV.  If None, finds the most recently
+              written file matching data/raw/market_*.csv.
+    Returns:
+        date-indexed DataFrame with all tickers' OHLCV columns.
+    """
+    path = path or _find_latest("market")
+    df = _load(path, parse_dates=["date"])
+    df = df.set_index("date").sort_index()
+    return df
+
+
 def load_all_raw(paths: dict[str, Path] = None) -> dict[str, pd.DataFrame]:
     """
     Load all raw sources and return as a dict of DataFrames.

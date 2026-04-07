@@ -1,1 +1,11 @@
-
+pandas
+numpy
+requests
+fredapi
+yfinance
+statsmodels
+scikit-learn
+xgboost
+python-dotenv
+pyyaml
+backtrader

@@ -183,6 +183,7 @@ forecasting:
 experiment:
   panels:
     - pce_national_mom          # Primary target: PCE MoM %
+    - mrts_national
 
   models:
     baseline:
@@ -265,46 +266,52 @@ experiment:
 #                 FORECASTEX configuration, and sensitivity analysis.
 # ---------------------------------------------------------------------------
 trading:
+  enabled: true
 
-  # Which experiment output to trade on.
-  # model_name and feature_set must match a row in the run's metrics.csv.
-  # Leave blank to auto-select the lowest-RMSE trial.
   selected_model:
-    model_name:  ""          # e.g. "RidgeForecaster"
-    feature_set: ""          # e.g. "macro_lags"
-    panel_name:  "pce_national_mom"
+    model_name: ""
+    feature_set: ""
+    panel_name: "pce_national_mom"
 
-  # Portfolio backtest parameters (backtrader)
+  strategy:
+    file: "krish_trade_strategy.py"
+    class: "KrishTradeStrategy"
+    params:
+      bullish_threshold: 0.75
+      bearish_threshold: -0.75
+      pce_weight: 0.6
+      mrts_weight: 0.4
+      target_allocation: 0.25
+      risk_on_ticker: "XLY"
+      defensive_ticker: "XLP"
+
+  forecast_panels:
+    primary: "pce_national_mom"
+    mrts: "mrts_national"
+
   portfolio:
-    strategy:     "DirectionalPCEStrategy"   # class name from _STRATEGY_REGISTRY
-    ticker:       "XLY"                      # primary security (Consumer Discretionary ETF)
-    benchmark:    "SPY"                      # benchmark for comparison
     initial_cash: 100000
-    commission:   0.002                      # round-trip fraction of trade value
-    params: {}                               # forwarded to strategy constructor
-                                             # e.g. for ThresholdPCEStrategy: {threshold: 0.2}
+    commission: 0.002
+    ticker: "XLY"
 
-  # FORECASTEX prediction-market simulation
   forecastex:
-    enabled:        false
-    contract_value: 100.0   # notional value per contract unit
-    bid_ask_spread: 0.02    # proportional transaction cost
+    enabled: false
+    contract_value: 100.0
+    bid_ask_spread: 0.02
 
-  # Historical market price data
   market_data:
-    source:     "yfinance"          # only "yfinance" supported; extend ingest.py for others
+    source: "yfinance"
     tickers:
-      - "XLY"                       # Consumer Discretionary Select Sector SPDR
-      - "SPY"                       # S&P 500 benchmark
-    start_date: "2019-01-01"        # should align with data.start_date
-    end_date:   "2026-02-01"        # should align with data.end_date
+      - "SPY"
+    start_date: "2019-01-01"
+    end_date: "2026-02-01"
+    refresh: false
 
-  # Sensitivity analysis — trading performance vs. forecast accuracy
   sensitivity_analysis:
-    enabled:      true
-    noise_sigmas: [0.0, 0.1, 0.2, 0.5, 1.0, 2.0]   # σ of Gaussian noise added to y_pred
-    n_trials:     50                                  # independent realisations per σ level
-    random_seed:  42
-
+    enabled: true
+    noise_sigmas: [0.0, 0.1, 0.2, 0.5, 1.0, 2.0]
+    n_trials: 50
+    random_seed: 42
+  
 logging:
   level: "INFO"

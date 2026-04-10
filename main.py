@@ -1,4 +1,3 @@
-# run_pipeline.py
 import argparse
 import pandas as pd
 from pathlib import Path
@@ -10,11 +9,7 @@ from src.data.clean import run_cleaning
 from src.data.store import write_master, write_fsbi
 from src.data.panel import build_panel
 from src.models.experiment import build_trial_grid, run_experiment
-# from src.trading.strategy import (
-#     load_best_forecasts, select_best_model,
-#     generate_signals, save_signals
-# )
-# from src.trading.simulation import run_simulation, compute_performance_metrics
+from src.trading.pipeline import run_configured_trading_pipeline
 
 
 def parse_args():
@@ -35,6 +30,11 @@ def parse_args():
         action="store_true",
         help="Run data + experiment stages only"
     )
+    parser.add_argument(
+        "--refresh-market-data",
+        action="store_true",
+        help="Force refresh of ticker market data before running trading"
+    )
     return parser.parse_args()
 
 
@@ -44,8 +44,8 @@ def run_data_stage():
     Only call when data needs to be (re)built — i.e. --stage data or --stage all.
     """
     print("\n[STAGE 1] Data ingestion & processing")
-    ingested          = run_ingestion()
-    raw_dfs           = load_all_raw(ingested)
+    ingested = run_ingestion()
+    raw_dfs = load_all_raw(ingested)
     master, fsbi_long = run_cleaning(raw_dfs)
     write_master(master)
     write_fsbi(fsbi_long)
@@ -73,41 +73,54 @@ def run_experiment_stage(
     Config-driven experiment stage. Reads the full trial grid from
     config.yaml (experiment.models, features.feature_sets) and runs
     walk-forward evaluation across all combinations.
-
-    To add a model variant, hyperparameter setting, feature set, or panel:
-    edit config.yaml only — no code changes needed.
-
-    To run multiple panels in one call, build a panels_data dict in main()
-    and pass it directly to build_trial_grid() + run_experiment().
     """
     print("\n[STAGE 2] Model experimentation")
 
-    horizon        = config["forecasting"]["horizons"][0]
+    horizon = config["forecasting"]["horizons"][0]
     min_train_size = config["forecasting"]["walk_forward_min_train"]
 
-    panels_data = {panel_name: (y, X)}
-    trials      = build_trial_grid(config, panels_data)
+    panels_data = {}
+    for panel_name in config["experiment"]["panels"]:
+        y, X, _ = load_panel(panel_name)
+        panels_data[panel_name] = (y, X)
 
+    trials = build_trial_grid(config, panels_data)
     return run_experiment(trials, min_train_size, horizon)
 
 
-# def run_trading_stage(summary_df: pd.DataFrame):
-#     """Load best forecasts, generate signals, run simulation."""
-#     print("\n[STAGE 3] Trading strategy & simulation")
+def run_trading_stage(refresh_market_data: bool = False):
+    """
+    Run the configured strategy from config.yaml against the latest
+    experiment outputs already written to disk.
 
-#     forecasts_df = load_best_forecasts()
-#     best_forecasts = select_best_model(forecasts_df, summary_df)
-#     signals_df = generate_signals(best_forecasts)
-#     save_signals(signals_df)
+    This works after:
+      - --stage all
+      - --stage experiment
+      - or directly with --stage trading, as long as a prior experiment run exists
+    """
+    print("\n[STAGE 3] Trading strategy & backtest")
 
-#     sim_results = run_simulation(signals_df)
-#     metrics = compute_performance_metrics(sim_results)
+    trading_result = run_configured_trading_pipeline(
+        cfg=config,
+        refresh_market_data=refresh_market_data,
+    )
 
-#     if metrics:
-#         print("[INFO] Trading performance:", metrics)
-#     else:
-#         print("[INFO] Trading simulation stub complete — "
-#               "implement simulation logic to see metrics")
+    print(
+        "[INFO] Trading complete | "
+        f"strategy={trading_result['strategy_name']} | "
+        f"tickers={trading_result['tickers']} | "
+        f"output_dir={trading_result['output_dir']}"
+    )
+
+    results = trading_result.get("results", {})
+    if results:
+        print(
+            "[INFO] Backtest summary | "
+            f"return_pct={results.get('return_pct')} | "
+            f"sharpe_ratio={results.get('sharpe_ratio')} | "
+            f"max_drawdown_pct={results.get('max_drawdown_pct')} | "
+            f"final_value={results.get('final_value')}"
+        )
 
 
 def main():
@@ -118,10 +131,10 @@ def main():
 
     if args.stage in ("all", "experiment"):
         y, X, _ = load_panel(args.panel)    # y_level unused until trading stage
-        summary_df = run_experiment_stage(y, X, args.panel)
+        run_experiment_stage(y, X, args.panel)
 
-    # if args.stage in ("all", "trading") and not args.skip_trading:
-    #     run_trading_stage(summary_df)
+    if args.stage in ("all", "trading") and not args.skip_trading:
+        run_trading_stage(refresh_market_data=args.refresh_market_data)
 
     print("\n[DONE] Pipeline complete.")
 

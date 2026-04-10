@@ -1,35 +1,21 @@
-# src/trading/backtest.py
-"""
-Backtesting engine for PCE-forecast-driven trading strategies.
-
-Two execution paths
--------------------
-BacktestEngine.run_portfolio()
-    Wraps backtrader (https://www.backtrader.com/).
-    Resamples daily OHLCV to monthly, attaches the pre-computed signal series
-    as a custom data line, and runs a generic signal-following adapter strategy.
-    Returns a standardised results dict including Sharpe, drawdown, trades.
-
-BacktestEngine.run_forecastex()
-    Simple P&L loop for prediction-market-style contracts.
-    No external library needed.  P&L is proportional to how close our forecast
-    is to the realised value relative to the consensus (market) price.
-
-Both paths accept a BaseStrategy instance and a StrategyData container.
-They write results to the experiment output directory (same schema as
-forecasts.csv / metrics.csv) so downstream performance.py can read them.
-
-Usage
------
-    engine  = BacktestEngine()
-    results = engine.run_portfolio(strategy, data, output_dir=run_dir)
-    results = engine.run_forecastex(strategy, data, all_forecasts, output_dir=run_dir)
-"""
-
 from __future__ import annotations
 
+"""
+src/trading/backtest.py
+
+Portfolio backtesting for the strategy framework.
+
+This version is intentionally aligned with the monthly workflow in krish-trade:
+- strategy emits a decision/target allocation on each signal date
+- engine enters on the next available trading day
+- engine exits/rebalances on the next signal date
+- supports multiple tickers and cash in one strategy
+
+It still accepts the old single-column signal format, but the preferred output is:
+    weight__SPY, weight__TLT, ..., cash_weight, confidence, metadata
+"""
+
 import json
-import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -39,247 +25,270 @@ import pandas as pd
 from src.trading.strategy import BaseStrategy, StrategyData
 from src.utils.config import config
 
-# backtrader is an optional dependency — portfolio path only.
-try:
-    import backtrader as bt
-    import backtrader.analyzers as btanalyzers
-    _BT_AVAILABLE = True
-except ImportError:
-    _BT_AVAILABLE = False
+
+def _normalize_price_columns(prices: pd.DataFrame) -> pd.DataFrame:
+    out = prices.copy()
+    out.index = pd.to_datetime(out.index)
+    out = out.sort_index()
+    out.columns = [str(c).lower() for c in out.columns]
+    return out
 
 
-# ---------------------------------------------------------------------------
-# Custom backtrader data feed — monthly OHLCV + pre-computed signal line
-# ---------------------------------------------------------------------------
-
-def _make_signal_feed_class():
-    """
-    Return a bt.feeds.PandasData subclass with an extra 'signal' line.
-    Defined at call time so the import guard above doesn't prevent module load.
-    """
-    class _MonthlySignalFeed(bt.feeds.PandasData):
-        """
-        Monthly OHLCV feed with an additional 'signal' line.
-        The DataFrame passed to this feed must have columns:
-            open, high, low, close, volume, signal
-        (lowercase, as produced by _build_monthly_feed()).
-        """
-        lines  = ("signal",)
-        params = (
-            ("datetime", None),   # index is the datetime
-            ("open",     "open"),
-            ("high",     "high"),
-            ("low",      "low"),
-            ("close",    "close"),
-            ("volume",   "volume"),
-            ("openinterest", -1),  # not present → -1 means ignore
-            ("signal",   "signal"),
-        )
-    return _MonthlySignalFeed
+def _next_trading_day(index: pd.DatetimeIndex, dt: pd.Timestamp) -> Optional[pd.Timestamp]:
+    candidates = index[index >= pd.Timestamp(dt)]
+    if len(candidates) == 0:
+        return None
+    return pd.Timestamp(candidates[0])
 
 
-def _make_adapter_strategy_class():
-    """
-    Return a backtrader Strategy subclass that executes pre-computed signals.
-    Long on signal > 0, short on signal < 0, flat on signal == 0.
-    """
-    class _SignalAdapter(bt.Strategy):
-        params = (("verbose", False),)
-
-        def log(self, txt):
-            if self.params.verbose:
-                dt = self.datas[0].datetime.date(0)
-                print(f"[BT] {dt}: {txt}")
-
-        def __init__(self):
-            self.signal = self.datas[0].signal
-
-        def next(self):
-            sig = self.signal[0]
-            pos = self.getposition().size
-
-            if sig > 0 and pos <= 0:
-                self.log(f"BUY  signal={sig:.3f}")
-                if pos < 0:
-                    self.close()
-                self.buy()
-            elif sig < 0 and pos >= 0:
-                self.log(f"SELL signal={sig:.3f}")
-                if pos > 0:
-                    self.close()
-                self.sell()
-            elif sig == 0 and pos != 0:
-                self.log("FLAT")
-                self.close()
-
-    return _SignalAdapter
+def _weight_columns(df: pd.DataFrame) -> list[str]:
+    return [c for c in df.columns if str(c).startswith("weight__")]
 
 
-# ---------------------------------------------------------------------------
-# OHLCV resampling + feed construction
-# ---------------------------------------------------------------------------
-
-def _build_monthly_feed(prices: pd.DataFrame, ticker: str, signals_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Resample daily OHLCV for *ticker* to month-end frequency and merge the
-    pre-computed signal series.
-
-    Args:
-        prices:     Date-indexed DataFrame with flat columns {ticker}_open/high/low/close/volume
-        ticker:     E.g. "XLY"
-        signals_df: Strategy output — DatetimeIndex, must have a "signal" column
-    Returns:
-        DataFrame with lowercase OHLCV columns + "signal", month-end DatetimeIndex.
-        Ready to pass to _MonthlySignalFeed.
-    """
-    col = lambda field: f"{ticker}_{field}"
-    has_ohlcv = all(col(f) in prices.columns for f in ("open", "high", "low", "close", "volume"))
-
-    if has_ohlcv:
-        monthly = pd.DataFrame({
-            "open":   prices[col("open")].resample("ME").first(),
-            "high":   prices[col("high")].resample("ME").max(),
-            "low":    prices[col("low")].resample("ME").min(),
-            "close":  prices[col("close")].resample("ME").last(),
-            "volume": prices[col("volume")].resample("ME").sum(),
-        }).dropna()
-    elif col("close") in prices.columns:
-        # Only close available — synthesise OHLV from close
-        close = prices[col("close")].resample("ME").last().dropna()
-        monthly = pd.DataFrame({
-            "open":   close,
-            "high":   close,
-            "low":    close,
-            "close":  close,
-            "volume": np.ones(len(close)),
-        })
-    else:
+def _legacy_signal_to_weights(signals_df: pd.DataFrame, default_ticker: str) -> pd.DataFrame:
+    df = signals_df.copy()
+    if "signal" not in df.columns:
         raise ValueError(
-            f"prices DataFrame has no columns for ticker '{ticker}'. "
-            f"Expected '{ticker}_close' at minimum."
+            "Strategy output must contain either 'signal' or one/more 'weight__TICKER' columns."
         )
 
-    # Align signal to monthly index — forward-fill, then fill remaining NaN with 0
-    monthly_signal = (
-        signals_df["signal"]
-        .reindex(monthly.index, method="ffill")
-        .fillna(0)
+    ticker = (default_ticker or "SPY").upper()
+    weight_col = f"weight__{ticker}"
+    signal = df["signal"].astype(float)
+
+    if weight_col not in df.columns:
+        df[weight_col] = signal
+    if "cash_weight" not in df.columns:
+        df["cash_weight"] = np.clip(1.0 - signal.abs(), 0.0, 1.0)
+    if "confidence" not in df.columns:
+        df["confidence"] = signal.abs()
+    if "metadata" not in df.columns:
+        df["metadata"] = "{}"
+
+    return df
+
+
+def _coerce_position_frame(signals_df: pd.DataFrame, default_ticker: str) -> pd.DataFrame:
+    df = signals_df.copy()
+
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date").set_index("date")
+    else:
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        df.index.name = "date"
+
+    if not _weight_columns(df):
+        df = _legacy_signal_to_weights(df, default_ticker=default_ticker)
+
+    if "cash_weight" not in df.columns:
+        exposure = df[_weight_columns(df)].abs().sum(axis=1)
+        df["cash_weight"] = np.clip(1.0 - exposure, 0.0, 1.0)
+
+    if "confidence" not in df.columns:
+        df["confidence"] = 1.0
+    if "metadata" not in df.columns:
+        df["metadata"] = "{}"
+
+    return df
+
+
+def _extract_requested_tickers(positions_df: pd.DataFrame) -> list[str]:
+    tickers = []
+    for col in _weight_columns(positions_df):
+        tickers.append(col.replace("weight__", "").upper())
+    return tickers
+
+
+def _close_price_frame(prices: pd.DataFrame, tickers: list[str]) -> pd.DataFrame:
+    normalized = _normalize_price_columns(prices)
+    cols = {}
+    missing = []
+    for ticker in tickers:
+        col = f"{ticker.lower()}_close"
+        if col not in normalized.columns:
+            missing.append(col)
+        else:
+            cols[ticker] = normalized[col]
+
+    if missing:
+        raise ValueError(
+            "Missing required close-price columns for requested tickers: "
+            f"{missing}. Available columns (first 15): {list(normalized.columns[:15])}"
+        )
+
+    out = pd.DataFrame(cols).dropna(how="all").sort_index().ffill()
+    if out.empty:
+        raise ValueError("No close-price history available after aligning requested tickers.")
+    return out
+
+
+def _max_drawdown(equity_curve: pd.Series) -> float:
+    roll_max = equity_curve.cummax()
+    drawdown = equity_curve / roll_max - 1.0
+    return float(drawdown.min())
+
+
+def _annualized_sharpe(returns: pd.Series, periods_per_year: int = 12) -> float:
+    if len(returns) < 2:
+        return float("nan")
+    vol = returns.std(ddof=1)
+    if vol == 0 or pd.isna(vol):
+        return float("nan")
+    return float(np.sqrt(periods_per_year) * returns.mean() / vol)
+
+
+def _run_weight_backtest(
+    positions_df: pd.DataFrame,
+    prices: pd.DataFrame,
+    initial_cash: float,
+    transaction_cost: float,
+) -> tuple[pd.DataFrame, dict, pd.Series]:
+    tickers = _extract_requested_tickers(positions_df)
+    if not tickers:
+        raise ValueError("No traded tickers found in strategy output.")
+
+    close_prices = _close_price_frame(prices, tickers)
+    equity = float(initial_cash)
+    prev_weights = pd.Series(0.0, index=tickers, dtype=float)
+    trade_rows: list[dict] = []
+    equity_points: list[tuple[pd.Timestamp, float]] = []
+
+    for i in range(len(positions_df) - 1):
+        row = positions_df.iloc[i]
+        next_row = positions_df.iloc[i + 1]
+        signal_date = pd.Timestamp(positions_df.index[i])
+        next_signal_date = pd.Timestamp(positions_df.index[i + 1])
+
+        entry_date = _next_trading_day(close_prices.index, signal_date)
+        exit_date = _next_trading_day(close_prices.index, next_signal_date)
+        if entry_date is None or exit_date is None or exit_date <= entry_date:
+            continue
+
+        weights = pd.Series(
+            {
+                ticker: float(row.get(f"weight__{ticker}", 0.0))
+                for ticker in tickers
+            },
+            dtype=float,
+        )
+
+        ticker_returns = {}
+        gross_return = 0.0
+        for ticker in tickers:
+            entry_px = float(close_prices.loc[entry_date, ticker])
+            exit_px = float(close_prices.loc[exit_date, ticker])
+            asset_return = (exit_px / entry_px) - 1.0
+            ticker_returns[ticker] = asset_return
+            gross_return += weights[ticker] * asset_return
+
+        turnover = float((weights - prev_weights).abs().sum())
+        cost = turnover * float(transaction_cost)
+        net_return = gross_return - cost
+
+        start_equity = equity
+        equity = equity * (1.0 + net_return)
+        prev_weights = weights
+        equity_points.append((exit_date, equity))
+
+        metadata = row.get("metadata", "{}")
+        trade_rows.append(
+            {
+                "signal_date": signal_date.date().isoformat(),
+                "entry_date": entry_date.date().isoformat(),
+                "exit_date": exit_date.date().isoformat(),
+                "weights": json.dumps({k: round(float(v), 6) for k, v in weights.items()}),
+                "cash_weight": float(row.get("cash_weight", 0.0)),
+                "confidence": float(row.get("confidence", 1.0)),
+                "gross_return": float(gross_return),
+                "transaction_cost": float(cost),
+                "net_return": float(net_return),
+                "turnover": float(turnover),
+                "ticker_returns": json.dumps({k: round(float(v), 6) for k, v in ticker_returns.items()}),
+                "start_equity": float(start_equity),
+                "end_equity": float(equity),
+                "metadata": metadata,
+            }
+        )
+
+    trades_df = pd.DataFrame(trade_rows)
+    if trades_df.empty:
+        equity_curve = pd.Series([initial_cash], index=[pd.Timestamp.today().normalize()], name="equity")
+        results = {
+            "sharpe_ratio": float("nan"),
+            "max_drawdown_pct": 0.0,
+            "return_pct": 0.0,
+            "annualized_return_pct": 0.0,
+            "num_trades": 0,
+            "won_trades": 0,
+            "lost_trades": 0,
+            "win_rate": 0.0,
+            "avg_won_pnl": 0.0,
+            "avg_lost_pnl": 0.0,
+            "final_value": float(initial_cash),
+            "absolute_return": 0.0,
+            "monthly_mode": "multi_asset_weight",
+            "tickers": tickers,
+        }
+        return trades_df, results, equity_curve
+
+    equity_curve = pd.Series(
+        [value for _, value in equity_points],
+        index=pd.to_datetime([dt for dt, _ in equity_points]),
+        name="equity",
     )
-    monthly["signal"] = monthly_signal.values
-    monthly.index.name = "datetime"
-    return monthly
+    period_returns = trades_df["net_return"].astype(float)
+    win_mask = period_returns > 0
+    years = max(len(trades_df) / 12.0, 1.0 / 12.0)
+    total_return = (equity / float(initial_cash)) - 1.0
+    annualized_return = (equity / float(initial_cash)) ** (1.0 / years) - 1.0
 
-
-# ---------------------------------------------------------------------------
-# Analyser result extraction
-# ---------------------------------------------------------------------------
-
-def _extract_analyzers(thestrats: list) -> dict:
-    """
-    Pull results from backtrader analysers attached to the strategy run.
-
-    Args:
-        thestrats: List returned by cerebro.run()
-    Returns:
-        Dict of scalar metrics.
-    """
-    strat = thestrats[0]
-
-    def _safe(analyser_name, *keys, default=float("nan")):
-        try:
-            a = getattr(strat.analyzers, analyser_name).get_analysis()
-            for k in keys:
-                a = a[k]
-            return float(a)
-        except (KeyError, TypeError, AttributeError, ZeroDivisionError):
-            return default
-
-    sharpe   = _safe("sharpe",   "sharperatio")
-    max_dd   = _safe("drawdown", "max", "drawdown")   # as %
-    max_dd_m = _safe("drawdown", "max", "moneydown")
-
-    ta = {}
-    try:
-        ta = strat.analyzers.trades.get_analysis()
-    except AttributeError:
-        pass
-
-    total_trades  = _safe_ta(ta, "total",  "total")
-    won_trades    = _safe_ta(ta, "won",    "total")
-    lost_trades   = _safe_ta(ta, "lost",   "total")
-    win_rate      = (won_trades / total_trades) if total_trades > 0 else float("nan")
-    avg_won       = _safe_ta(ta, "won",  "pnl", "average")
-    avg_lost      = _safe_ta(ta, "lost", "pnl", "average")
-
-    roi_pct = _safe("returns", "rnorm100")
-
-    return {
-        "sharpe_ratio":     sharpe,
-        "max_drawdown_pct": max_dd,
-        "max_drawdown_cash":max_dd_m,
-        "return_pct":       roi_pct,
-        "num_trades":       total_trades,
-        "won_trades":       won_trades,
-        "lost_trades":      lost_trades,
-        "win_rate":         win_rate,
-        "avg_won_pnl":      avg_won,
-        "avg_lost_pnl":     avg_lost,
+    results = {
+        "sharpe_ratio": _annualized_sharpe(period_returns),
+        "max_drawdown_pct": _max_drawdown(equity_curve) * 100.0,
+        "return_pct": total_return * 100.0,
+        "annualized_return_pct": annualized_return * 100.0,
+        "num_trades": int(len(trades_df)),
+        "won_trades": int(win_mask.sum()),
+        "lost_trades": int((period_returns < 0).sum()),
+        "win_rate": float(win_mask.mean()),
+        "avg_won_pnl": float(period_returns[period_returns > 0].mean()) if (period_returns > 0).any() else 0.0,
+        "avg_lost_pnl": float(period_returns[period_returns < 0].mean()) if (period_returns < 0).any() else 0.0,
+        "final_value": float(equity),
+        "absolute_return": float(equity - initial_cash),
+        "monthly_mode": "multi_asset_weight",
+        "tickers": tickers,
     }
+    return trades_df, results, equity_curve
 
-
-def _safe_ta(ta: dict, *keys, default=float("nan")):
-    """Safely traverse a nested TradeAnalyzer dict."""
-    try:
-        v = ta
-        for k in keys:
-            v = v[k]
-        return float(v)
-    except (KeyError, TypeError):
-        return default
-
-
-# ---------------------------------------------------------------------------
-# FORECASTEX helpers
-# ---------------------------------------------------------------------------
 
 def _run_forecastex_loop(
-    signals_df:     pd.DataFrame,
-    forecasts_df:   pd.DataFrame,
+    signals_df: pd.DataFrame,
+    forecasts_df: pd.DataFrame,
     contract_value: float = 100.0,
     bid_ask_spread: float = 0.02,
 ) -> pd.DataFrame:
-    """
-    Simulate FORECASTEX prediction-market P&L.
-
-    Model
-    -----
-    Each month we take a position proportional to signal strength.
-    The "market price" (consensus) is the mean y_pred across all models —
-    a proxy for what the market expects.
-    P&L = signal × contract_value × (y_true − consensus)
-          − |signal| × bid_ask_spread × contract_value
-
-    This is a simplified model; a full implementation would require actual
-    FORECASTEX contract pricing.
-
-    Args:
-        signals_df:     Strategy output — DatetimeIndex, signal column in [-1, 1]
-        forecasts_df:   Full forecasts.csv (all models) for consensus computation
-        contract_value: Notional value per contract unit
-        bid_ask_spread: Proportional transaction cost per trade
-
-    Returns:
-        DataFrame with columns [signal, our_pred, y_true, consensus, pnl, cumulative_pnl]
-    """
     selected = forecasts_df.set_index("date")[["y_true", "y_pred"]].rename(
         columns={"y_pred": "our_pred"}
     )
     consensus = forecasts_df.groupby("date")["y_pred"].mean().rename("consensus")
 
     df = signals_df.copy()
-    df = df.join(selected,   how="left")
-    df = df.join(consensus,  how="left")
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.set_index("date")
+    else:
+        df.index = pd.to_datetime(df.index)
 
+    if "signal" not in df.columns:
+        weight_cols = _weight_columns(df)
+        if not weight_cols:
+            raise ValueError("FORECASTEX simulation requires a scalar signal or weight columns.")
+        df["signal"] = df[weight_cols].sum(axis=1)
+
+    df = df.join(selected, how="left")
+    df = df.join(consensus, how="left")
     df["pnl"] = (
         df["signal"] * contract_value * (df["y_true"] - df["consensus"])
         - df["signal"].abs() * bid_ask_spread * contract_value
@@ -288,207 +297,125 @@ def _run_forecastex_loop(
     return df
 
 
-# ---------------------------------------------------------------------------
-# BacktestEngine
-# ---------------------------------------------------------------------------
-
 class BacktestEngine:
-    """
-    Unified backtesting engine for PCE-forecast-driven strategies.
-
-    Args:
-        initial_cash: Starting portfolio value for portfolio backtests.
-        commission:   Round-trip commission as a fraction of trade value.
-        ticker:       Primary security for portfolio backtests (e.g. "XLY").
-    """
-
     def __init__(
         self,
         initial_cash: float = None,
-        commission:   float = None,
-        ticker:       str   = None,
+        commission: float = None,
+        ticker: str = None,
     ):
         cfg = config.get("trading", {}).get("portfolio", {})
-        self.initial_cash = initial_cash or cfg.get("initial_cash", 100_000)
-        self.commission   = commission   or cfg.get("commission",   0.002)
-        self.ticker       = ticker       or cfg.get("ticker",       "XLY")
-
-    # ------------------------------------------------------------------
-    # Portfolio backtest (backtrader)
-    # ------------------------------------------------------------------
+        self.initial_cash = float(initial_cash or cfg.get("initial_cash", 100_000))
+        self.commission = float(commission or cfg.get("commission", 0.002))
+        self.ticker = (ticker or cfg.get("ticker", "XLY")).upper()
 
     def run_portfolio(
         self,
-        strategy:    BaseStrategy,
-        data:        StrategyData,
-        output_dir:  Optional[Path] = None,
+        strategy: BaseStrategy,
+        data: StrategyData,
+        output_dir: Optional[Path] = None,
     ) -> dict:
-        """
-        Run a portfolio backtest using backtrader.
-
-        Args:
-            strategy:   Instantiated BaseStrategy.
-            data:       StrategyData with at minimum forecasts + prices.
-            output_dir: If provided, writes signals CSV and results JSON here.
-        Returns:
-            Dict of performance metrics: sharpe_ratio, return_pct, win_rate,
-            max_drawdown_pct, num_trades, won_trades, lost_trades,
-            avg_won_pnl, avg_lost_pnl, plus an "equity_curve" list.
-        Raises:
-            ImportError if backtrader is not installed.
-            ValueError  if prices are missing from data.
-        """
-        if not _BT_AVAILABLE:
-            raise ImportError(
-                "The 'backtrader' package is required for portfolio backtests. "
-                "Install it with: pip install backtrader"
-            )
         if data.prices is None:
             raise ValueError(
                 "run_portfolio() requires data.prices. "
-                "Load market data via load.load_market_data() first."
+                "Load market data before running the trading pipeline."
             )
 
-        print(f"[INFO] Running portfolio backtest: {strategy.name} on {self.ticker}")
-
-        signals_df    = strategy.generate_signals(data)
-        monthly_df    = _build_monthly_feed(data.prices, self.ticker, signals_df)
-
-        MonthlyFeed   = _make_signal_feed_class()
-        AdapterStrat  = _make_adapter_strategy_class()
-
-        cerebro = bt.Cerebro()
-        cerebro.broker.setcash(self.initial_cash)
-        cerebro.broker.setcommission(commission=self.commission)
-
-        feed = MonthlyFeed(dataname=monthly_df)
-        cerebro.adddata(feed)
-
-        cerebro.addstrategy(AdapterStrat)
-
-        cerebro.addanalyzer(btanalyzers.SharpeRatio,   _name="sharpe",
-                            riskfreerate=0.0, annualize=True, factor=12)
-        cerebro.addanalyzer(btanalyzers.DrawDown,      _name="drawdown")
-        cerebro.addanalyzer(btanalyzers.TradeAnalyzer, _name="trades")
-        cerebro.addanalyzer(btanalyzers.Returns,       _name="returns",
-                            tann=12)
-        cerebro.addanalyzer(btanalyzers.TimeReturn,    _name="timereturn")
-
-        start_val = cerebro.broker.getvalue()
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            thestrats = cerebro.run()
-        end_val = cerebro.broker.getvalue()
-
-        results = _extract_analyzers(thestrats)
-        results["strategy"]        = strategy.name
-        results["ticker"]          = self.ticker
-        results["initial_cash"]    = start_val
-        results["final_value"]     = end_val
-        results["absolute_return"] = end_val - start_val
-
-        # Equity curve from TimeReturn analyser
-        try:
-            tr = thestrats[0].analyzers.timereturn.get_analysis()
-            equity_vals = (pd.Series(tr).add(1).cumprod() * start_val)
-            results["equity_curve"] = equity_vals.to_dict()
-        except Exception:
-            results["equity_curve"] = {}
-
-        if output_dir is not None:
-            self._write_portfolio_results(results, signals_df, output_dir)
-
-        return results
-
-    # ------------------------------------------------------------------
-    # FORECASTEX backtest
-    # ------------------------------------------------------------------
-
-    def run_forecastex(
-        self,
-        strategy:      BaseStrategy,
-        data:          StrategyData,
-        all_forecasts: pd.DataFrame,
-        output_dir:    Optional[Path] = None,
-    ) -> dict:
-        """
-        Simulate FORECASTEX prediction-market trading.
-
-        Args:
-            strategy:      Instantiated BaseStrategy.
-            data:          StrategyData (only forecasts required).
-            all_forecasts: Full forecasts.csv DataFrame (all models, for consensus).
-            output_dir:    If provided, writes forecastex_trades.csv and results JSON.
-        Returns:
-            Dict: total_pnl, mean_monthly_pnl, win_rate, num_trades, final_cum_pnl.
-        """
-        cfg_fx  = config.get("trading", {}).get("forecastex", {})
-        c_val   = cfg_fx.get("contract_value", 100.0)
-        bid_ask = cfg_fx.get("bid_ask_spread",  0.02)
-
-        print(f"[INFO] Running FORECASTEX simulation: {strategy.name}")
-
         signals_df = strategy.generate_signals(data)
-        trades_df  = _run_forecastex_loop(signals_df, all_forecasts, c_val, bid_ask)
+        positions_df = _coerce_position_frame(signals_df, default_ticker=strategy.default_ticker or self.ticker)
+        trades_df, results, equity_curve = _run_weight_backtest(
+            positions_df=positions_df,
+            prices=data.prices,
+            initial_cash=self.initial_cash,
+            transaction_cost=self.commission,
+        )
 
-        active = trades_df[trades_df["signal"] != 0]
-        wins   = (active["pnl"] > 0).sum()
-        total  = len(active)
-
-        results = {
-            "strategy":         strategy.name,
-            "total_pnl":        float(trades_df["pnl"].sum()),
-            "mean_monthly_pnl": float(trades_df["pnl"].mean()),
-            "win_rate":         float(wins / total) if total > 0 else float("nan"),
-            "num_trades":       total,
-            "final_cum_pnl":    float(trades_df["cumulative_pnl"].iloc[-1]),
+        results["strategy"] = strategy.name
+        results["initial_cash"] = self.initial_cash
+        results["ticker"] = self.ticker
+        results["equity_curve"] = {
+            ts.isoformat(): float(val) for ts, val in equity_curve.items()
         }
 
         if output_dir is not None:
-            self._write_forecastex_results(results, trades_df, output_dir)
+            self._write_portfolio_results(
+                results=results,
+                raw_signals_df=signals_df,
+                positions_df=positions_df,
+                trades_df=trades_df,
+                output_dir=Path(output_dir),
+            )
 
         return results
 
-    # ------------------------------------------------------------------
-    # Output writers
-    # ------------------------------------------------------------------
+    def run_forecastex(
+        self,
+        strategy: BaseStrategy,
+        data: StrategyData,
+        all_forecasts: pd.DataFrame,
+        output_dir: Optional[Path] = None,
+    ) -> dict:
+        cfg_fx = config.get("trading", {}).get("forecastex", {})
+        contract_value = float(cfg_fx.get("contract_value", 100.0))
+        bid_ask_spread = float(cfg_fx.get("bid_ask_spread", 0.02))
+
+        signals_df = strategy.generate_signals(data)
+        trades_df = _run_forecastex_loop(
+            signals_df=signals_df,
+            forecasts_df=all_forecasts,
+            contract_value=contract_value,
+            bid_ask_spread=bid_ask_spread,
+        )
+
+        active = trades_df[trades_df["signal"] != 0]
+        wins = int((active["pnl"] > 0).sum())
+        total = int(len(active))
+
+        results = {
+            "strategy": strategy.name,
+            "total_pnl": float(trades_df["pnl"].sum()),
+            "mean_monthly_pnl": float(trades_df["pnl"].mean()),
+            "win_rate": float(wins / total) if total > 0 else float("nan"),
+            "num_trades": total,
+            "final_cum_pnl": float(trades_df["cumulative_pnl"].iloc[-1]) if not trades_df.empty else 0.0,
+        }
+
+        if output_dir is not None:
+            self._write_forecastex_results(results=results, trades_df=trades_df, output_dir=Path(output_dir))
+
+        return results
 
     def _write_portfolio_results(
         self,
-        results:    dict,
-        signals_df: pd.DataFrame,
+        results: dict,
+        raw_signals_df: pd.DataFrame,
+        positions_df: pd.DataFrame,
+        trades_df: pd.DataFrame,
         output_dir: Path,
     ) -> None:
-        output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         name = results["strategy"]
 
-        signals_df.reset_index().to_csv(output_dir / f"signals_{name}.csv", index=False)
+        raw_signals_df.reset_index().to_csv(output_dir / f"signals_{name}.csv", index=False)
+        positions_df.reset_index().to_csv(output_dir / f"positions_{name}.csv", index=False)
+        trades_df.to_csv(output_dir / f"backtest_trades_{name}.csv", index=False)
 
-        scalar = {k: v for k, v in results.items() if k != "equity_curve"}
+        scalar_results = {k: v for k, v in results.items() if k != "equity_curve"}
         with open(output_dir / f"backtest_results_{name}.json", "w") as f:
-            json.dump(scalar, f, indent=2)
+            json.dump(scalar_results, f, indent=2)
 
         if results.get("equity_curve"):
-            eq = pd.Series(results["equity_curve"], name="equity")
-            eq.to_csv(output_dir / f"equity_curve_{name}.csv")
-
-        print(f"[INFO] Portfolio backtest results written to {output_dir}")
+            equity_curve = pd.Series(results["equity_curve"], name="equity")
+            equity_curve.to_csv(output_dir / f"equity_curve_{name}.csv")
 
     def _write_forecastex_results(
         self,
-        results:    dict,
-        trades_df:  pd.DataFrame,
+        results: dict,
+        trades_df: pd.DataFrame,
         output_dir: Path,
     ) -> None:
-        output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         name = results["strategy"]
-
-        trades_df.reset_index().to_csv(
-            output_dir / f"forecastex_trades_{name}.csv", index=False
-        )
+        trades_df.reset_index().to_csv(output_dir / f"forecastex_trades_{name}.csv", index=False)
         with open(output_dir / f"forecastex_results_{name}.json", "w") as f:
             json.dump(results, f, indent=2)
-
-        print(f"[INFO] FORECASTEX results written to {output_dir}")

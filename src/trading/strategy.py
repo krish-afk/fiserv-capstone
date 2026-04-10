@@ -1,30 +1,50 @@
-# src/trading/strategy.py
+from __future__ import annotations
+
 """
-Strategy layer for PCE-forecast-driven trading simulations.
+src/trading/strategy.py
 
-Architecture
-------------
-BaseStrategy (ABC)
-  ├── DirectionalPCEStrategy   – long/short based on forecast sign
-  └── ThresholdPCEStrategy     – trade only when |forecast| > threshold
+Strategy abstractions + dynamic strategy loading helpers.
 
-All strategies accept a StrategyData container and return a standardised
-signal DataFrame.  The backtest layer (backtest.py) handles execution;
-strategies only generate signals.
+What this adds
+--------------
+1. Team members can drop their own strategy file into src/trading/strategies/.
+2. config.yaml can point at the file/class to run.
+3. Strategies declare the tickers they need, and the trading pipeline can fetch
+   those tickers automatically.
+4. Strategies can return either:
+      - legacy single-ticker signals (signal/confidence/metadata), or
+      - generic multi-asset weights via weight__TICKER columns.
 
-Signal schema
--------------
-date        DatetimeIndex
-signal      float  [-1.0, 1.0]  (-1 = full short, 0 = flat, 1 = full long)
-confidence  float  [0.0, 1.0]   abs(signal) by default; override in subclass
-metadata    str                 JSON-serialisable debug info (y_pred, etc.)
+Recommended config.yaml shape
+-----------------------------
+trading:
+  strategy:
+    file: krish_trade_strategy.py
+    class: KrishTradeStrategy
+    params:
+      bullish_threshold: 0.75
+      bearish_threshold: -0.75
+
+  forecast_panels:
+    primary: pce
+    mrts: mrts
+
+  market_data:
+    tickers: []         # optional extras; strategy tickers are always included
+    start_date: 2018-01-01
+    end_date: 2026-01-01
+    source: yfinance
 """
 
+import importlib.util
+import inspect
 import json
+import re
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -32,310 +52,481 @@ import pandas as pd
 from src.utils.config import config
 
 
-# ---------------------------------------------------------------------------
-# StrategyData — typed input container
-# ---------------------------------------------------------------------------
+DEFAULT_STRATEGY_DIR = Path(__file__).resolve().parent / "strategies"
+_WEIGHT_PREFIX = "weight__"
+
 
 @dataclass
 class StrategyData:
     """
     Container for all inputs a strategy may need.
 
-    Required: forecasts
-    Optional: prices, macro, mrts  (strategies declare needs via required_inputs)
+    Attributes
+    ----------
+    forecasts
+        Primary forecast panel for the strategy. Usually PCE.
+        Expected columns include at least: date | y_true | y_pred.
+    prices
+        Date-indexed OHLCV data with columns in the canonical schema:
+        {ticker_lower}_open/high/low/close/volume.
+    macro
+        Optional macro frame (usually latest FRED pull).
+    mrts
+        Optional MRTS forecast frame when the strategy needs both PCE and MRTS.
+    cfg
+        Full loaded config so a strategy can read optional config values.
+    context
+        Free-form auxiliary objects the pipeline can attach.
     """
-    forecasts: pd.DataFrame                     # date | y_true | y_pred | model_name | …
-    prices:    Optional[pd.DataFrame] = None    # date-indexed OHLCV, flat cols (XLY_close …)
-    macro:     Optional[pd.DataFrame] = None    # date-indexed macro indicators
-    mrts:      Optional[pd.DataFrame] = None    # date | y_true | y_pred for MRTS target
 
-    def validate(self, required: set) -> None:
-        """
-        Raise ValueError if any required input is None.
+    forecasts: pd.DataFrame
+    prices: Optional[pd.DataFrame] = None
+    macro: Optional[pd.DataFrame] = None
+    mrts: Optional[pd.DataFrame] = None
+    cfg: Optional[dict] = None
+    context: dict[str, Any] = field(default_factory=dict)
 
-        Args:
-            required: Set of attribute names that must be present
-                      (subset of {"forecasts", "prices", "macro", "mrts"})
-        """
-        missing = [k for k in required if getattr(self, k, None) is None]
+    def validate(self, required: set[str]) -> None:
+        missing = [name for name in required if getattr(self, name, None) is None]
         if missing:
             raise ValueError(
                 f"Strategy requires inputs {missing} but they are None in StrategyData."
             )
 
+    @property
+    def config(self) -> dict:
+        return self.cfg or {}
 
-# ---------------------------------------------------------------------------
-# BaseStrategy
-# ---------------------------------------------------------------------------
 
 class BaseStrategy(ABC):
     """
-    Abstract base class for all trading strategy implementations.
+    Base class for all strategies.
 
-    To add a new strategy:
-      1. Inherit from BaseStrategy.
-      2. Implement ``name`` (property) and ``generate_signals()`` (method).
-      3. Override ``required_inputs`` if the strategy needs prices / macro / mrts.
-      4. Register it in config.yaml under trading.strategies.
+    Strategy authors should typically implement:
+      - name
+      - generate_signals(data)
+      - tickers (if the strategy trades securities)
+      - required_inputs (when macro / mrts / prices are needed)
 
-    Subclasses must NOT implement backtest execution — that belongs in backtest.py.
+    Output formats
+    --------------
+    A strategy may return one of two DataFrame formats:
+
+    1) Legacy single-ticker format
+       index=date, columns=[signal, confidence, metadata]
+
+    2) Preferred multi-asset format
+       index=date, columns like:
+           weight__SPY, weight__TLT, cash_weight, confidence, metadata
+
+       Weight columns are interpreted as target portfolio weights for that period.
+       Negative weights are allowed for short exposure.
     """
 
-    def __init__(self, **params):
-        """
-        Args:
-            **params: Strategy hyperparameters.  Subclasses should accept
-                      explicit kwargs AND forward **params to super().__init__()
-                      so they are accessible via self.params for logging.
-        """
+    def __init__(self, **params: Any):
         self.params = params
-
-    # ------------------------------------------------------------------
-    # Abstract interface
-    # ------------------------------------------------------------------
 
     @property
     @abstractmethod
     def name(self) -> str:
-        """Unique string identifier — used in output filenames and logs."""
         ...
 
     @abstractmethod
     def generate_signals(self, data: StrategyData) -> pd.DataFrame:
-        """
-        Compute trading signals from forecast and optional inputs.
-
-        Args:
-            data: StrategyData container (validated against required_inputs
-                  before this method is called by BacktestEngine).
-        Returns:
-            DataFrame with DatetimeIndex and columns:
-                signal      float [-1.0, 1.0]
-                confidence  float [0.0, 1.0]
-                metadata    str  (JSON string, may be "{}")
-        """
         ...
 
-    # ------------------------------------------------------------------
-    # Optional overrides
-    # ------------------------------------------------------------------
-
     @property
-    def required_inputs(self) -> set:
-        """
-        Names of StrategyData attributes this strategy requires.
-        Default: only forecasts.  Override if prices / macro / mrts are needed.
-        """
+    def required_inputs(self) -> set[str]:
         return {"forecasts"}
 
-    # ------------------------------------------------------------------
-    # Helpers available to all subclasses
-    # ------------------------------------------------------------------
+    @property
+    def tickers(self) -> list[str]:
+        return []
+
+    @property
+    def default_ticker(self) -> Optional[str]:
+        if self.tickers:
+            return self.tickers[0].upper()
+        return config.get("trading", {}).get("portfolio", {}).get("ticker")
+
+    @staticmethod
+    def price_col(ticker: str, field: str = "close") -> str:
+        return f"{ticker.lower()}_{field.lower()}"
+
+    @classmethod
+    def get_price_series(
+        cls,
+        prices: pd.DataFrame,
+        ticker: str,
+        field: str = "close",
+    ) -> pd.Series:
+        if prices is None:
+            raise ValueError("prices is None. Strategy requested market data that was not loaded.")
+
+        col = cls.price_col(ticker, field)
+        normalized = prices.copy()
+        normalized.columns = [str(c).lower() for c in normalized.columns]
+
+        if col not in normalized.columns:
+            available = [c for c in normalized.columns if c.endswith(f"_{field.lower()}")]
+            raise KeyError(
+                f"Column '{col}' not found in prices. "
+                f"Available {field} columns (first 10): {available[:10]}"
+            )
+        return normalized[col]
+
+    @staticmethod
+    def _coerce_forecast_index(df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+        if "date" in out.columns:
+            out["date"] = pd.to_datetime(out["date"])
+            out = out.sort_values("date").set_index("date")
+        else:
+            out.index = pd.to_datetime(out.index)
+            out = out.sort_index()
+        return out
 
     @staticmethod
     def _make_signals(
         index: pd.DatetimeIndex,
         signal: np.ndarray,
-        confidence: np.ndarray = None,
-        metadata: list = None,
+        confidence: Optional[np.ndarray] = None,
+        metadata: Optional[list[dict[str, Any]]] = None,
     ) -> pd.DataFrame:
-        """
-        Build a standardised signal DataFrame.
-
-        Args:
-            index:      DatetimeIndex aligned to forecast dates
-            signal:     Array of float values in [-1, 1]
-            confidence: Optional array of float values in [0, 1];
-                        defaults to abs(signal)
-            metadata:   Optional list of dicts; defaults to [{}] * len(index)
-        Returns:
-            DataFrame with DatetimeIndex and columns [signal, confidence, metadata]
-        """
         if confidence is None:
             confidence = np.abs(signal)
         if metadata is None:
-            metadata = [{}] * len(index)
+            metadata = [{} for _ in range(len(index))]
 
         return pd.DataFrame(
             {
-                "signal":     signal.astype(float),
-                "confidence": confidence.astype(float),
-                "metadata":   [json.dumps(m) for m in metadata],
+                "signal": np.asarray(signal, dtype=float),
+                "confidence": np.asarray(confidence, dtype=float),
+                "metadata": [json.dumps(m) for m in metadata],
             },
-            index=index,
+            index=pd.DatetimeIndex(index, name="date"),
+        )
+
+    @staticmethod
+    def _make_weight_frame(
+        index: pd.DatetimeIndex,
+        weights: dict[str, np.ndarray | list[float]],
+        cash_weight: Optional[np.ndarray | list[float]] = None,
+        confidence: Optional[np.ndarray | list[float]] = None,
+        metadata: Optional[list[dict[str, Any]]] = None,
+    ) -> pd.DataFrame:
+        data: dict[str, Any] = {}
+        n = len(index)
+
+        for ticker, values in weights.items():
+            col = f"{_WEIGHT_PREFIX}{ticker.upper()}"
+            data[col] = np.asarray(values, dtype=float)
+
+        if cash_weight is None:
+            exposure = np.zeros(n, dtype=float)
+            for values in data.values():
+                exposure = exposure + np.abs(values)
+            cash_weight = np.clip(1.0 - exposure, 0.0, 1.0)
+
+        if confidence is None:
+            confidence = np.ones(n, dtype=float)
+
+        if metadata is None:
+            metadata = [{} for _ in range(n)]
+
+        data["cash_weight"] = np.asarray(cash_weight, dtype=float)
+        data["confidence"] = np.asarray(confidence, dtype=float)
+        data["metadata"] = [json.dumps(m) for m in metadata]
+
+        return pd.DataFrame(data, index=pd.DatetimeIndex(index, name="date"))
+
+
+class DirectionalPCEStrategy(BaseStrategy):
+    def __init__(self, ticker: str = "XLY", **params: Any):
+        super().__init__(ticker=ticker, **params)
+        self._ticker = ticker.upper()
+
+    @property
+    def name(self) -> str:
+        return f"directional_pce_{self._ticker.lower()}"
+
+    @property
+    def tickers(self) -> list[str]:
+        return [self._ticker]
+
+    def generate_signals(self, data: StrategyData) -> pd.DataFrame:
+        data.validate(self.required_inputs)
+        df = self._coerce_forecast_index(data.forecasts)
+
+        preds = df["y_pred"].astype(float).to_numpy()
+        signal = np.sign(preds)
+        metadata = [{"y_pred": round(float(v), 6), "ticker": self._ticker} for v in preds]
+
+        return self._make_weight_frame(
+            index=df.index,
+            weights={self._ticker: signal},
+            confidence=np.abs(signal),
+            metadata=metadata,
         )
 
 
-# ---------------------------------------------------------------------------
-# Concrete strategy implementations
-# ---------------------------------------------------------------------------
-
-class DirectionalPCEStrategy(BaseStrategy):
-    """
-    Simplest defensible PCE strategy: long when forecast PCE change is positive,
-    short when negative, flat when zero.
-
-    Academic rationale: consumer discretionary spending (XLY) has a documented
-    positive relationship with PCE growth.  A forecast of rising PCE → long XLY;
-    falling PCE → short XLY.
-
-    Params
-    ------
-    (none — fully determined by forecast sign)
-    """
-
-    @property
-    def name(self) -> str:
-        return "directional_pce"
-
-    def generate_signals(self, data: StrategyData) -> pd.DataFrame:
-        data.validate(self.required_inputs)
-        df = data.forecasts.copy().sort_values("date").set_index("date")
-
-        raw_signal = np.sign(df["y_pred"].values).astype(float)
-        metadata   = [{"y_pred": round(float(v), 6)} for v in df["y_pred"]]
-
-        return self._make_signals(df.index, raw_signal, metadata=metadata)
-
-
 class ThresholdPCEStrategy(BaseStrategy):
-    """
-    Trade only when the absolute forecast PCE change exceeds a threshold.
-    Below the threshold the strategy is flat (signal = 0).
-
-    This is a natural extension of DirectionalPCEStrategy — the threshold
-    filters out low-conviction months when the model forecasts near-zero change,
-    reducing whipsaw trades.
-
-    Params
-    ------
-    threshold : float
-        Minimum absolute forecast value required to enter a position.
-        Units match the target transform (e.g. 0.2 for MoM % means ±0.2 pp).
-        Default: 0.2.
-    scale_confidence : bool
-        If True, confidence is proportional to |y_pred| / threshold rather
-        than binary.  Default: True.
-    """
-
-    def __init__(self, threshold: float = 0.2, scale_confidence: bool = True, **params):
-        super().__init__(threshold=threshold, scale_confidence=scale_confidence, **params)
-        self.threshold         = threshold
-        self.scale_confidence  = scale_confidence
+    def __init__(
+        self,
+        ticker: str = "XLY",
+        threshold: float = 0.2,
+        scale_confidence: bool = True,
+        **params: Any,
+    ):
+        super().__init__(
+            ticker=ticker,
+            threshold=threshold,
+            scale_confidence=scale_confidence,
+            **params,
+        )
+        self._ticker = ticker.upper()
+        self.threshold = float(threshold)
+        self.scale_confidence = bool(scale_confidence)
 
     @property
     def name(self) -> str:
-        return f"threshold_pce_{self.threshold}"
+        return f"threshold_pce_{self._ticker.lower()}_{self.threshold}"
+
+    @property
+    def tickers(self) -> list[str]:
+        return [self._ticker]
 
     def generate_signals(self, data: StrategyData) -> pd.DataFrame:
         data.validate(self.required_inputs)
-        df = data.forecasts.copy().sort_values("date").set_index("date")
+        df = self._coerce_forecast_index(data.forecasts)
+        preds = df["y_pred"].astype(float).to_numpy()
 
-        preds = df["y_pred"].values.astype(float)
-        above = np.abs(preds) >= self.threshold
-
-        raw_signal = np.where(above, np.sign(preds), 0.0)
+        active = np.abs(preds) >= self.threshold
+        signal = np.where(active, np.sign(preds), 0.0)
 
         if self.scale_confidence:
             confidence = np.where(
-                above,
+                active,
                 np.clip(np.abs(preds) / max(self.threshold, 1e-8), 0.0, 1.0),
                 0.0,
             )
         else:
-            confidence = np.where(above, 1.0, 0.0)
+            confidence = np.where(active, 1.0, 0.0)
 
         metadata = [
-            {"y_pred": round(float(p), 6), "threshold": self.threshold, "active": bool(a)}
-            for p, a in zip(preds, above)
+            {
+                "ticker": self._ticker,
+                "y_pred": round(float(pred), 6),
+                "threshold": self.threshold,
+                "active": bool(is_active),
+            }
+            for pred, is_active in zip(preds, active)
         ]
 
-        return self._make_signals(df.index, raw_signal, confidence, metadata)
+        return self._make_weight_frame(
+            index=df.index,
+            weights={self._ticker: signal},
+            confidence=confidence,
+            metadata=metadata,
+        )
 
 
-# ---------------------------------------------------------------------------
-# Strategy registry — mirrors _MODEL_REGISTRY pattern from experiment.py
-# ---------------------------------------------------------------------------
-
-_STRATEGY_REGISTRY: dict = {
+_STRATEGY_REGISTRY: dict[str, type[BaseStrategy]] = {
     "DirectionalPCEStrategy": DirectionalPCEStrategy,
-    "ThresholdPCEStrategy":   ThresholdPCEStrategy,
+    "ThresholdPCEStrategy": ThresholdPCEStrategy,
 }
 
 
-def build_strategy(name: str, **params) -> BaseStrategy:
-    """
-    Instantiate a strategy by class name, forwarding params as kwargs.
+def register_strategy(cls: type[BaseStrategy]) -> type[BaseStrategy]:
+    if not issubclass(cls, BaseStrategy):
+        raise TypeError(f"{cls!r} must inherit from BaseStrategy")
+    _STRATEGY_REGISTRY[cls.__name__] = cls
+    return cls
 
-    Args:
-        name:   Class name string (must exist in _STRATEGY_REGISTRY)
-        **params: Passed to the strategy constructor
-    Returns:
-        Initialised BaseStrategy instance
-    Raises:
-        KeyError if name is not registered
-    """
-    if name not in _STRATEGY_REGISTRY:
-        raise KeyError(
-            f"Unknown strategy '{name}'. "
-            f"Registered: {list(_STRATEGY_REGISTRY)}"
+
+def _normalize_strategy_filename(strategy_file: str) -> str:
+    strategy_file = strategy_file.strip()
+    return strategy_file if strategy_file.endswith(".py") else f"{strategy_file}.py"
+
+
+def _load_strategy_module(strategy_file: str, strategy_dir: Optional[Path] = None):
+    strategy_dir = Path(strategy_dir or DEFAULT_STRATEGY_DIR)
+    filename = _normalize_strategy_filename(strategy_file)
+    path = strategy_dir / filename
+    if not path.exists():
+        raise FileNotFoundError(f"Strategy file not found: {path}")
+
+    module_name = f"src.trading.user_strategy_{re.sub(r'[^a-zA-Z0-9_]', '_', path.stem)}"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load strategy module from {path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _resolve_strategy_class_from_module(module, class_name: Optional[str] = None) -> type[BaseStrategy]:
+    if class_name:
+        try:
+            candidate = getattr(module, class_name)
+        except AttributeError as exc:
+            raise AttributeError(
+                f"Strategy class '{class_name}' not found in module '{module.__name__}'"
+            ) from exc
+
+        if not inspect.isclass(candidate) or not issubclass(candidate, BaseStrategy):
+            raise TypeError(
+                f"{class_name} exists but does not inherit from BaseStrategy"
+            )
+        return candidate
+
+    candidates: list[type[BaseStrategy]] = []
+    for _, obj in inspect.getmembers(module, inspect.isclass):
+        if issubclass(obj, BaseStrategy) and obj is not BaseStrategy and obj.__module__ == module.__name__:
+            candidates.append(obj)
+
+    if not candidates:
+        raise ValueError(
+            f"No BaseStrategy subclass found in module '{module.__name__}'."
         )
+    if len(candidates) > 1:
+        names = [cls.__name__ for cls in candidates]
+        raise ValueError(
+            f"Multiple strategy classes found in '{module.__name__}': {names}. "
+            "Set trading.strategy.class in config.yaml."
+        )
+    return candidates[0]
+
+
+def build_strategy(
+    name: Optional[str] = None,
+    **params: Any,
+) -> BaseStrategy:
+    if not name:
+        raise ValueError("build_strategy() requires a strategy class name.")
+    if name not in _STRATEGY_REGISTRY:
+        raise KeyError(f"Unknown strategy '{name}'. Registered: {sorted(_STRATEGY_REGISTRY)}")
     return _STRATEGY_REGISTRY[name](**params)
 
 
-# ---------------------------------------------------------------------------
-# Forecast loading helpers (unchanged interface, kept for pipeline continuity)
-# ---------------------------------------------------------------------------
+def load_strategy_from_file(
+    strategy_file: str,
+    class_name: Optional[str] = None,
+    strategy_dir: Optional[Path] = None,
+    params: Optional[dict[str, Any]] = None,
+) -> BaseStrategy:
+    module = _load_strategy_module(strategy_file, strategy_dir=strategy_dir)
+    cls = _resolve_strategy_class_from_module(module, class_name=class_name)
+    register_strategy(cls)
+    return cls(**(params or {}))
 
-def load_best_forecasts(experiments_dir: Path = None) -> pd.DataFrame:
-    """
-    Load forecast CSV from the most recent experiment run.
 
-    Returns:
-        DataFrame with columns [date, y_true, y_pred, model_name, feature_set]
-    """
-    if experiments_dir is None:
-        experiments_dir = Path(config["paths"]["experiments"])
+def load_configured_strategy(
+    cfg: Optional[dict] = None,
+    strategy_dir: Optional[Path] = None,
+) -> BaseStrategy:
+    cfg = cfg or config
+    trading_cfg = cfg.get("trading", {})
+    strategy_cfg = trading_cfg.get("strategy", {})
 
+    if strategy_cfg.get("file"):
+        return load_strategy_from_file(
+            strategy_file=strategy_cfg["file"],
+            class_name=strategy_cfg.get("class"),
+            strategy_dir=strategy_dir,
+            params=strategy_cfg.get("params", {}),
+        )
+
+    # Backward-compatible fallback for old registry-only configs.
+    legacy_name = strategy_cfg.get("name") or trading_cfg.get("strategy_name")
+    legacy_params = strategy_cfg.get("params") or trading_cfg.get("strategy_params", {})
+    if legacy_name:
+        return build_strategy(name=legacy_name, **legacy_params)
+
+    raise KeyError(
+        "No strategy configured. Set trading.strategy.file in config.yaml "
+        "(recommended) or trading.strategy.name (legacy)."
+    )
+
+
+def load_latest_run_frames(experiments_dir: Path = None) -> tuple[Path, pd.DataFrame, pd.DataFrame]:
+    experiments_dir = Path(experiments_dir or config["paths"]["experiments"])
     run_dirs = sorted(experiments_dir.glob("*_run"))
     if not run_dirs:
         raise FileNotFoundError(f"No experiment runs found in {experiments_dir}")
 
-    latest        = run_dirs[-1]
-    forecasts_path = latest / "forecasts.csv"
-    print(f"[INFO] Loading forecasts from {latest.name}")
-    return pd.read_csv(forecasts_path, parse_dates=["date"])
+    latest_run = run_dirs[-1]
+    forecasts_path = latest_run / "forecasts.csv"
+    metrics_path = latest_run / "metrics.csv"
+
+    if not forecasts_path.exists():
+        raise FileNotFoundError(f"Missing forecasts.csv in {latest_run}")
+    if not metrics_path.exists():
+        raise FileNotFoundError(f"Missing metrics.csv in {latest_run}")
+
+    forecasts_df = pd.read_csv(forecasts_path, parse_dates=["date"])
+    metrics_df = pd.read_csv(metrics_path)
+    return latest_run, forecasts_df, metrics_df
+
+
+def load_best_forecasts(experiments_dir: Path = None) -> pd.DataFrame:
+    _, forecasts_df, _ = load_latest_run_frames(experiments_dir=experiments_dir)
+    return forecasts_df
+
+
+def _panel_selection_config(panel_name: Optional[str]) -> dict[str, Any]:
+    sel = config.get("trading", {}).get("selected_model", {})
+    if panel_name and isinstance(sel.get(panel_name), dict):
+        return sel[panel_name]
+    return sel
 
 
 def select_best_model(
     forecasts_df: pd.DataFrame,
-    metrics_df:   pd.DataFrame,
+    metrics_df: pd.DataFrame,
+    panel_name: Optional[str] = None,
 ) -> pd.DataFrame:
-    """
-    Filter forecast DataFrame to rows from the best-performing model.
+    working_forecasts = forecasts_df.copy()
+    working_metrics = metrics_df.copy()
 
-    Falls back to config["trading"]["selected_model"] if present; otherwise
-    selects the row with the lowest RMSE in metrics_df.
+    if panel_name and "panel_name" in working_forecasts.columns:
+        working_forecasts = working_forecasts[working_forecasts["panel_name"] == panel_name].copy()
+    if panel_name and "panel_name" in working_metrics.columns:
+        working_metrics = working_metrics[working_metrics["panel_name"] == panel_name].copy()
 
-    Args:
-        forecasts_df: Full forecasts from all trials
-        metrics_df:   Summary metrics DataFrame from run_experiment()
-    Returns:
-        Forecasts from the single best model / feature_set combination
-    """
-    sel = config.get("trading", {}).get("selected_model", {})
+    if working_forecasts.empty:
+        raise ValueError(f"No forecasts available for panel '{panel_name}'.")
+    if working_metrics.empty:
+        raise ValueError(f"No metrics available for panel '{panel_name}'.")
+
+    sel = _panel_selection_config(panel_name)
     if sel.get("model_name") and sel.get("feature_set"):
         best_model = sel["model_name"]
-        best_fs    = sel["feature_set"]
-        print(f"[INFO] Config-selected model: {best_model} | features: {best_fs}")
+        best_fs = sel["feature_set"]
     else:
-        best_row   = metrics_df.dropna(subset=["rmse"]).nsmallest(1, "rmse").iloc[0]
+        best_row = working_metrics.dropna(subset=["rmse"]).nsmallest(1, "rmse").iloc[0]
         best_model = best_row["model_name"]
-        best_fs    = best_row["feature_set"]
-        print(f"[INFO] Auto-selected model: {best_model} | features: {best_fs}")
+        best_fs = best_row["feature_set"]
 
     mask = (
-        (forecasts_df["model_name"]  == best_model) &
-        (forecasts_df["feature_set"] == best_fs)
+        (working_forecasts["model_name"] == best_model)
+        & (working_forecasts["feature_set"] == best_fs)
     )
-    return forecasts_df[mask].copy()
+    selected = working_forecasts[mask].copy()
+    if selected.empty:
+        raise ValueError(
+            f"Selected model '{best_model}' with feature set '{best_fs}' produced no forecasts"
+            + (f" for panel '{panel_name}'" if panel_name else "")
+            + "."
+        )
+    return selected.sort_values("date").reset_index(drop=True)
+
+
+def load_best_forecasts_for_panel(
+    panel_name: str,
+    experiments_dir: Path = None,
+) -> pd.DataFrame:
+    _, forecasts_df, metrics_df = load_latest_run_frames(experiments_dir=experiments_dir)
+    return select_best_model(forecasts_df, metrics_df, panel_name=panel_name)

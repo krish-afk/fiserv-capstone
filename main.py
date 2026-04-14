@@ -21,7 +21,7 @@ def parse_args():
     )
     parser.add_argument(
         "--stage",
-        choices=["all", "data", "experiment", "trading"],
+        choices=["all", "data", "experiment", "trading", "plot"],
         default="all",
         help="Run a specific pipeline stage or all stages (default: all)"
     )
@@ -146,6 +146,11 @@ def main():
 
     if args.stage in ("all", "trading") and not args.skip_trading:
         run_trading_stage(refresh_market_data=args.refresh_market_data)
+
+    if args.stage in ("all", "plot"):
+        from src.visualization.eval_plots import plot_best_vs_baseline
+        # It defaults to MRTS, but you can pass args.panel if you want it dynamic
+        plot_best_vs_baseline(panel_name=args.panel)
 
     print("\n[DONE] Pipeline complete.")
 

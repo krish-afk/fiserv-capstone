@@ -29,7 +29,6 @@ from pathlib import Path
 
 TARGET = "PersonalConsumptionExpenditures_normalized"
 DATA_PATH = Path("/home/leo/Documents/Grad School/QCF/00_full_dataset.csv") #Change your file path here.
-WINNER_PATH = Path("/home/leo/Documents/Grad School/QCF/sector__Accommodation_and_Food_Services.csv") #Path to tournament-winning split
 ARTIFACTS_DIR = Path("results/phase1")
 
 # Ensure artifacts directory exists

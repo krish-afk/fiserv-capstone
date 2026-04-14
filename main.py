@@ -92,35 +92,46 @@ def run_trading_stage(refresh_market_data: bool = False):
     """
     Run the configured strategy from config.yaml against the latest
     experiment outputs already written to disk.
-
-    This works after:
-      - --stage all
-      - --stage experiment
-      - or directly with --stage trading, as long as a prior experiment run exists
     """
     print("\n[STAGE 3] Trading strategy & backtest")
+    
+    # 1. Peek at the config to see what kind of strategy we are running
+    from src.trading.strategy import load_configured_strategy
+    strategy = load_configured_strategy(cfg=config)
 
-    trading_result = run_configured_trading_pipeline(
-        cfg=config,
-        refresh_market_data=refresh_market_data,
-    )
-
-    print(
-        "[INFO] Trading complete | "
-        f"strategy={trading_result['strategy_name']} | "
-        f"tickers={trading_result['tickers']} | "
-        f"output_dir={trading_result['output_dir']}"
-    )
-
-    results = trading_result.get("results", {})
-    if results:
-        print(
-            "[INFO] Backtest summary | "
-            f"return_pct={results.get('return_pct')} | "
-            f"sharpe_ratio={results.get('sharpe_ratio')} | "
-            f"max_drawdown_pct={results.get('max_drawdown_pct')} | "
-            f"final_value={results.get('final_value')}"
+    # 2. THE ROUTER: Event Contracts vs. Standard Equities
+    if strategy.name == "mrts_forecast_market":
+        print("[INFO] Event Contract Strategy detected. Routing to Prediction Market Simulator...")
+        
+        # Import and run your custom backtester
+        from src.trading.run_event_backtest import run_event_pipeline
+        run_event_pipeline()
+        
+    else:
+        print("[INFO] Equity Strategy detected. Routing to Standard Portfolio Simulator...")
+        
+        # Run Krish/Will's standard pipeline
+        trading_result = run_configured_trading_pipeline(
+            cfg=config,
+            refresh_market_data=refresh_market_data,
         )
+
+        print(
+            "[INFO] Trading complete | "
+            f"strategy={trading_result['strategy_name']} | "
+            f"tickers={trading_result['tickers']} | "
+            f"output_dir={trading_result['output_dir']}"
+        )
+
+        results = trading_result.get("results", {})
+        if results:
+            print(
+                "[INFO] Backtest summary | "
+                f"return_pct={results.get('return_pct')} | "
+                f"sharpe_ratio={results.get('sharpe_ratio')} | "
+                f"max_drawdown_pct={results.get('max_drawdown_pct')} | "
+                f"final_value={results.get('final_value')}"
+            )
 
 
 def main():

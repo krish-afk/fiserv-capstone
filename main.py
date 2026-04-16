@@ -88,6 +88,60 @@ def run_experiment_stage(
     return run_experiment(trials, min_train_size, horizon)
 
 
+def _safe_metric(results: dict, metric: str, stat: str):
+    return results.get("metrics", {}).get(metric, {}).get(stat)
+
+
+def _fmt(value, digits: int = 2) -> str:
+    if value is None:
+        return "NA"
+    try:
+        return f"{float(value):.{digits}f}"
+    except Exception:
+        return str(value)
+
+
+def _print_trading_summary(results: dict) -> None:
+    mode = str(results.get("mode", "backtest")).lower()
+
+    if mode == "monte_carlo":
+        print(
+            "[INFO] Monte Carlo summary | "
+            f"n_paths={results.get('n_paths')} | "
+            f"model={results.get('simulation_model')} | "
+            f"window={results.get('simulation_start')}->{results.get('simulation_end')}"
+        )
+        print(
+            "[INFO] Monte Carlo returns | "
+            f"mean={_fmt(_safe_metric(results, 'return_pct', 'mean'))}% | "
+            f"median={_fmt(_safe_metric(results, 'return_pct', 'median'))}% | "
+            f"p05={_fmt(_safe_metric(results, 'return_pct', 'p05'))}% | "
+            f"p95={_fmt(_safe_metric(results, 'return_pct', 'p95'))}%"
+        )
+        print(
+            "[INFO] Monte Carlo risk | "
+            f"sharpe_mean={_fmt(_safe_metric(results, 'sharpe_ratio', 'mean'))} | "
+            f"sharpe_median={_fmt(_safe_metric(results, 'sharpe_ratio', 'median'))} | "
+            f"max_dd_mean={_fmt(_safe_metric(results, 'max_drawdown_pct', 'mean'))}% | "
+            f"max_dd_median={_fmt(_safe_metric(results, 'max_drawdown_pct', 'median'))}%"
+        )
+        print(
+            "[INFO] Monte Carlo portfolio | "
+            f"final_value_mean={_fmt(_safe_metric(results, 'final_value', 'mean'))} | "
+            f"final_value_median={_fmt(_safe_metric(results, 'final_value', 'median'))} | "
+            f"win_rate_mean={_fmt(_safe_metric(results, 'win_rate', 'mean'))}"
+        )
+        return
+
+    print(
+        "[INFO] Backtest summary | "
+        f"return_pct={_fmt(results.get('return_pct'))} | "
+        f"sharpe_ratio={_fmt(results.get('sharpe_ratio'))} | "
+        f"max_drawdown_pct={_fmt(results.get('max_drawdown_pct'))} | "
+        f"final_value={_fmt(results.get('final_value'))}"
+    )
+
+
 def run_trading_stage(refresh_market_data: bool = False):
     """
     Run the configured strategy from config.yaml against the latest
@@ -125,13 +179,7 @@ def run_trading_stage(refresh_market_data: bool = False):
 
         results = trading_result.get("results", {})
         if results:
-            print(
-                "[INFO] Backtest summary | "
-                f"return_pct={results.get('return_pct')} | "
-                f"sharpe_ratio={results.get('sharpe_ratio')} | "
-                f"max_drawdown_pct={results.get('max_drawdown_pct')} | "
-                f"final_value={results.get('final_value')}"
-            )
+             _print_trading_summary(results)
 
 
 def main():

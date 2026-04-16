@@ -228,7 +228,12 @@ def build_strategy_data(
         )
 
     macro_df = None
-    if "macro" in strategy.required_inputs:
+    mc_cfg = cfg.get("trading", {}).get("monte_carlo", {}) or {}
+    need_macro = (
+        "macro" in strategy.required_inputs
+        or str(mc_cfg.get("drift_mode", "historical")).lower() == "risk_free"
+    )
+    if need_macro:
         macro_df = _load_macro_if_needed()
 
     prices_df = None

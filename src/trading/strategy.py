@@ -97,6 +97,18 @@ class StrategyData:
     def config(self) -> dict:
         return self.cfg or {}
 
+    def copy_with(self, **updates: Any) -> "StrategyData":
+        payload = {
+            "forecasts": self.forecasts,
+            "prices": self.prices,
+            "macro": self.macro,
+            "mrts": self.mrts,
+            "cfg": self.cfg,
+            "context": dict(self.context),
+        }
+        payload.update(updates)
+        return StrategyData(**payload)
+
 
 class BaseStrategy(ABC):
     """

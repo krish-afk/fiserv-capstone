@@ -267,6 +267,7 @@ experiment:
 # ---------------------------------------------------------------------------
 trading:
   enabled: true
+  test_mode: "monte_carlo"   # "backtest" or "monte_carlo"
 
   selected_model:
     model_name: ""
@@ -293,6 +294,15 @@ trading:
     initial_cash: 100000
     commission: 0.002
     ticker: "XLY"
+  
+  monte_carlo:
+    model: "gbm"
+    n_paths: 500
+    random_seed: 42
+    drift_mode: "historical"   # "historical", "zero", "risk_free"
+    lookback_days: 252
+    risk_free_column: null     # optional explicit column if already in macro data
+    save_path_details: true
 
   forecastex:
     enabled: false

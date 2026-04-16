@@ -33,10 +33,15 @@ fiserv-capstone/
 │   │   ├── evaluate.py      # walk_forward_evaluate(), compute_metrics()
 │   │   └── experiment.py    # Trial grid builder and experiment runner
 │   ├── trading/
-│   │   ├── strategy.py      # BaseStrategy, DirectionalPCEStrategy, ThresholdPCEStrategy
-│   │   ├── backtest.py      # BacktestEngine (backtrader portfolio + FORECASTEX loop)
-│   │   └── performance.py   # Sharpe, drawdown, sensitivity analysis
-│   └── utils/
+│   │   ├── strategies/                 # Strategy files loaded dynamically via config
+│   │   │   ├── krish_trade_strategy.py # Consumer regime ETF strategy
+│   │   │   └── mrts_event_strategy.py  # MRTS prediction market binary strategy
+│   │   ├── strategy.py                 # BaseStrategy and universal adapter logic
+│   │   ├── backtest.py                 # Standard portfolio equity backtester 
+│   │   ├── run_event_backtest.py       # Custom evaluation engine for event contracts
+│   │   └── performance.py              # Sharpe, drawdown, sensitivity analysis
+│   ├── visualization/
+│   │   └── eval_plots.py               # Generates out-of-sample plots (Best Model vs Baseline)
 │       └── config.py        # Loads config.yaml and .env into the global config dict
 ├── data/
 │   ├── raw/                 # Written by ingest.py; fsbi_raw.csv placed here manually
@@ -69,10 +74,11 @@ USCB_API_KEY=your_census_key   # https://api.census.gov/data/key_signup.html
 
 ### 3. Place the FSBI file
 
-The FSBI dataset is not available via public API. Place the pre-downloaded file at:
+Some datasets are not available via public API. Place the pre-downloaded files at:
 
 ```
 data/raw/fsbi_raw.csv
+data/raw/mrts_bbg_consensus.csv
 ```
 
 ### 4. Run the full pipeline
@@ -87,6 +93,7 @@ This runs all three stages in order: data ingestion, model experimentation, and 
 python main.py --stage data        # Ingest and process raw data only
 python main.py --stage experiment  # Run model grid on already-processed data
 python main.py --stage trading     # Run trading simulation on experiment outputs
+python main.py --stage plot        # Generate Best Model vs Baseline forecast plots
 ```
 
 To run a specific panel:
@@ -135,13 +142,16 @@ Processed files written to `data/processed/`:
 
 ### Stage 3 — Trading
 
-Built on top of experiment outputs. Two execution paths:
+Built on top of experiment outputs. `main.py` contains a dynamic router that evaluates the strategy configured in `config.yaml` and deploys the appropriate backtesting engine:
 
-**Portfolio backtest** uses backtrader to run monthly signal-following on XLY. The best-performing forecasting model (or one selected explicitly in `config.yaml`) generates directional signals, which are executed via a long/short strategy. Metrics: Sharpe ratio, annualised return, max drawdown, win rate.
+1. **Portfolio backtest:** Uses backtrader to run monthly signal-following on standard equities (e.g., XLY). Metrics: Sharpe ratio, annualised return, max drawdown, win rate.
+2. **FORECASTEX simulation:** (`src/trading/run_event_backtest.py`) Models P&L on a prediction-market contract. Compares model point estimates against Bloomberg consensus strike prices, applies normal distribution math to find the probability edge, and outputs Pure vs. Realistic PnL.
 
-**FORECASTEX simulation** models P&L on a prediction-market contract. Position size is proportional to signal strength; the consensus price is the mean `y_pred` across all models in the run.
+**Sensitivity analysis** (`src/trading/performance.py`) measures how trading performance degrades as forecast accuracy declines by injecting Gaussian noise.
 
-**Sensitivity analysis** (`src/trading/performance.py`) measures how trading performance degrades as forecast accuracy declines by injecting Gaussian noise into `y_pred` at configurable σ levels and re-running the backtest for each noise level.
+### Stage 4 — Visualization
+
+Runs `src/visualization/eval_plots.py` to extract the best-performing model from `metrics.csv` and plot its out-of-sample predictions against ground truth and a Naive baseline. Plots are saved directly into the active `experiments/` run folder.
 
 ---
 
@@ -152,14 +162,31 @@ All experiment parameters live in `config.yaml`. No Python changes are needed to
 ### Adding a panel
 
 ```yaml
-data:
-  panels:
-    my_new_panel:
-      target: "pce"                  # "pce" or "mrts"
-      target_transform: "mom"        # "mom", "yoy", or null (level)
-      geography: ["CA"]              # FSBI Geo values; null defaults to "US"
-      sectors: ["Retail Trade"]      # substring match; null = all
-      subsectors: null               # substring match; null = all
+### Switching the trading strategy
+
+Strategies are loaded dynamically. Specify the `.py` file to load from the `src/trading/strategies/` folder, and pass its required parameters.
+
+**Example A: Standard Equity Strategy (ETF Rotation)**
+trading:
+  strategy:
+    file: "krish_trade_strategy.py"
+    class: "KrishTradeStrategy"
+    params:
+      bullish_threshold: 0.75
+      bearish_threshold: -0.75
+      risk_on_ticker: "XLY"
+      defensive_ticker: "XLP"
+
+**Example B: Prediction Market Strategy (Binary Event Contracts)**
+trading:
+  strategy:
+    file: "mrts_event_strategy.py"
+    class: "MRTSForecastMarketStrategy"
+    params:
+      bloomberg_csv_path: "data/raw/mrts_bbg_consensus.csv" 
+      model_rmse: 0.15          
+      edge_threshold: 0.02      
+      contract_price: 0.50
 ```
 
 Then add the panel name to `experiment.panels` to include it in the next run.

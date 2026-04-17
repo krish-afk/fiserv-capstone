@@ -7,6 +7,7 @@ from datetime import datetime
 from itertools import product
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Tuple
+from dataclasses import dataclass
 
 from src.models.base import BaseForecaster
 from src.models.baselines import NaiveForecaster, MeanForecaster
@@ -59,6 +60,12 @@ class Trial(NamedTuple):
     y:                pd.Series
     panel_name:       str
 
+@dataclass
+class ExperimentRunResult:
+    run_dir: Path
+    metrics_df: pd.DataFrame
+    forecasts_df: pd.DataFrame
+    metadata: dict
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -212,45 +219,35 @@ def build_trial_grid(
     return trials
 
 
-def run_experiment(
+def _execute_experiment(
     trials: List[Trial],
     min_train_size: int = 36,
     horizon: int = 1,
-) -> pd.DataFrame:
+) -> ExperimentRunResult:
     """
-    Run walk-forward evaluation for every trial, write outputs to a timestamped
-    experiments/ directory, and return a summary DataFrame sorted by MAE.
-
-    Output files written to experiments/{timestamp}_run/:
-      metrics.csv   — one row per trial: panel, model, feature_set, all metrics
-      forecasts.csv — one row per (trial, date): date, y_true, y_pred, labels
-      metadata.json — run configuration summary
-
-    Args:
-        trials:         List of Trial objects from build_trial_grid().
-        min_train_size: Minimum training observations before first forecast.
-        horizon:        Forecast horizon (steps ahead).
-
-    Returns:
-        Summary DataFrame with columns
-        [panel_name, model_name, feature_set, mae, rmse, me, mape, dir_acc, r2].
-        Sorted by MAE ascending (failed trials at bottom).
+    Core experiment execution used by both:
+      - run_experiment(...)               -> backward-compatible summary DataFrame
+      - run_experiment_with_details(...)  -> rich structured result for dashboard/API
     """
     exp_dir = _make_experiment_dir()
     summary_rows = []
     all_forecasts = []
 
-    for trial in trials:
-        print(f"[INFO] Running Experiment - Trial {trials.index(trial) + 1} / {len(trials)}")
+    for i, trial in enumerate(trials, start=1):
+        print(f"[INFO] Running Experiment - Trial {i} / {len(trials)}")
         try:
             preds = walk_forward_evaluate(
-                trial.model, trial.y, trial.X, min_train_size, horizon
+                trial.model,
+                trial.y,
+                trial.X,
+                min_train_size,
+                horizon,
             )
             metrics = compute_metrics(preds["y_true"], preds["y_pred"])
 
             summary_rows.append({
-                "panel_name":  trial.panel_name,
-                "model_name":  trial.model_label,
+                "panel_name": trial.panel_name,
+                "model_name": trial.model_label,
                 "feature_set": trial.feature_set_name,
                 **metrics,
             })
@@ -261,54 +258,98 @@ def run_experiment(
                 artifact_path.write_text(json.dumps(artifacts, indent=2, default=float))
 
             preds = preds.reset_index()
-            preds["model_name"]  = trial.model_label
+            preds["model_name"] = trial.model_label
             preds["feature_set"] = trial.feature_set_name
-            preds["panel_name"]  = trial.panel_name
+            preds["panel_name"] = trial.panel_name
             all_forecasts.append(preds)
 
         except Exception as e:
-            print(f"[WARN] Trial failed — panel={trial.panel_name}, "
-                  f"model={trial.model_label}, "
-                  f"features={trial.feature_set_name}: {e}")
+            print(
+                f"[WARN] Trial failed — panel={trial.panel_name}, "
+                f"model={trial.model_label}, features={trial.feature_set_name}: {e}"
+            )
             summary_rows.append({
-                "panel_name":  trial.panel_name,
-                "model_name":  trial.model_label,
+                "panel_name": trial.panel_name,
+                "model_name": trial.model_label,
                 "feature_set": trial.feature_set_name,
-                "mae": None, "rmse": None, "me": None,
-                "mape": None, "dir_acc": None, "r2": None,
+                "mae": None,
+                "rmse": None,
+                "me": None,
+                "mape": None,
+                "dir_acc": None,
+                "r2": None,
                 "error": str(e),
             })
 
-    summary_df = pd.DataFrame(summary_rows).sort_values("mae", na_position="last")
-
-    # --- Write outputs ---
-    summary_df.to_csv(exp_dir / "metrics.csv", index=False)
+    metrics_df = pd.DataFrame(summary_rows).sort_values("mae", na_position="last")
 
     if all_forecasts:
-        pd.concat(all_forecasts, ignore_index=True).to_csv(
-            exp_dir / "forecasts.csv", index=False
+        forecasts_df = pd.concat(all_forecasts, ignore_index=True)
+    else:
+        forecasts_df = pd.DataFrame(
+            columns=["date", "y_true", "y_pred", "model_name", "feature_set", "panel_name"]
         )
+
+    metrics_df.to_csv(exp_dir / "metrics.csv", index=False)
+    forecasts_df.to_csv(exp_dir / "forecasts.csv", index=False)
 
     n_artifacts = sum(
         1 for t in trials if (exp_dir / "artifacts" / _artifact_filename(t)).exists()
     )
+
     metadata = {
-        "timestamp":      datetime.now().isoformat(),
-        "horizon":        horizon,
+        "timestamp": datetime.now().isoformat(),
+        "horizon": horizon,
         "min_train_size": min_train_size,
-        "panels":         sorted({t.panel_name for t in trials}),
-        "models":         sorted({t.model_label for t in trials}),
-        "feature_sets":   sorted({t.feature_set_name for t in trials}),
-        "n_trials":       len(trials),
-        "n_artifacts":    n_artifacts,
+        "panels": sorted({t.panel_name for t in trials}),
+        "models": sorted({t.model_label for t in trials}),
+        "feature_sets": sorted({t.feature_set_name for t in trials}),
+        "n_trials": len(trials),
+        "n_artifacts": n_artifacts,
+        "run_dir": str(exp_dir),
     }
+
     with open(exp_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
 
-    print(f"[INFO] Experiment complete — {len(trials)} trials. "
-          f"Results written to {exp_dir}")
-    display_cols = ["panel_name", "model_name", "feature_set", "mae", "rmse", "dir_acc"]
-    available = [c for c in display_cols if c in summary_df.columns]
-    # print(summary_df[available].to_string(index=False))   # commented out; too much printing output
+    print(f"[INFO] Experiment complete — {len(trials)} trials. Results written to {exp_dir}")
 
-    return summary_df
+    return ExperimentRunResult(
+        run_dir=exp_dir,
+        metrics_df=metrics_df,
+        forecasts_df=forecasts_df,
+        metadata=metadata,
+    )
+
+
+def run_experiment(
+    trials: List[Trial],
+    min_train_size: int = 36,
+    horizon: int = 1,
+) -> pd.DataFrame:
+    """
+    Backward-compatible API.
+    Returns the metrics summary DataFrame exactly like before.
+    """
+    result = _execute_experiment(
+        trials=trials,
+        min_train_size=min_train_size,
+        horizon=horizon,
+    )
+    return result.metrics_df
+
+
+def run_experiment_with_details(
+    trials: List[Trial],
+    min_train_size: int = 36,
+    horizon: int = 1,
+) -> ExperimentRunResult:
+    """
+    Dashboard/API-friendly API.
+    Returns metrics + forecasts + metadata + run_dir.
+    """
+    return _execute_experiment(
+        trials=trials,
+        min_train_size=min_train_size,
+        horizon=horizon,
+    )

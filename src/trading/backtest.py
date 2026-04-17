@@ -651,6 +651,7 @@ class BacktestEngine:
         strategy: BaseStrategy,
         data: StrategyData,
         output_dir: Optional[Path] = None,
+        test_mode: Optional[str] = None,
     ) -> dict:
         if data.prices is None:
             raise ValueError(
@@ -658,7 +659,7 @@ class BacktestEngine:
                 "Load market data before running the trading pipeline."
             )
 
-        test_mode = _test_mode_from_config()
+        test_mode = _coerce_test_mode(test_mode or _test_mode_from_config())
         default_ticker = strategy.default_ticker or self.ticker
 
         if test_mode == "monte_carlo":

@@ -9,3 +9,4 @@ xgboost
 python-dotenv
 pyyaml
 backtrader
+plotly

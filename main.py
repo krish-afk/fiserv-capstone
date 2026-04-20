@@ -21,7 +21,7 @@ def parse_args():
     )
     parser.add_argument(
         "--stage",
-        choices=["all", "data", "experiment", "trading"],
+        choices=["all", "data", "experiment", "trading", "plot"],
         default="all",
         help="Run a specific pipeline stage or all stages (default: all)"
     )
@@ -194,6 +194,11 @@ def main():
 
     if args.stage in ("all", "trading") and not args.skip_trading:
         run_trading_stage(refresh_market_data=args.refresh_market_data)
+
+    if args.stage in ("all", "plot"):
+        from src.visualization.eval_plots import generate_all_dashboard_plots
+        # Grabs the panel from your command line args
+        generate_all_dashboard_plots(panel_name=args.panel)
 
     print("\n[DONE] Pipeline complete.")
 

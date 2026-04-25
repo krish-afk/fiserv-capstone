@@ -60,7 +60,6 @@ def generate_macro_profiler(run_dir: Path, forecasts_df: pd.DataFrame, metrics_d
         best_df = select_best_model(forecasts_df, metrics_df, panel_name=panel_name).set_index('date').sort_index()
         best_df['Abs_Error_Pct'] = np.abs((best_df['y_true'] - best_df['y_pred']) / best_df['y_true']) * 100
         
-        # Load master macro dataset
         master_path = Path(config.get("paths", {}).get("processed_data", "data/processed/")) / "master.csv"
         if not master_path.exists():
             print(f"[PLOT] Skipping Macro Profiler: Could not find {master_path}")
@@ -68,12 +67,11 @@ def generate_macro_profiler(run_dir: Path, forecasts_df: pd.DataFrame, metrics_d
             
         macro_df = pd.read_csv(master_path, parse_dates=['date']).set_index('date')
         
-        # Normalize macro variables to YoY % Change for apples-to-apples scaling
         macro_pct = macro_df.pct_change(12) * 100 
         macro_pct = macro_pct.replace([np.inf, -np.inf], np.nan).dropna(axis=1, thresh=len(macro_pct)*0.8)
         
         merged = best_df[['Abs_Error_Pct']].join(macro_pct, how='inner').dropna()
-        macro_cols = [c for c in merged.columns if c != 'Abs_Error_Pct'][:8] # Limit to top 8 clean columns
+        macro_cols = [c for c in merged.columns if c != 'Abs_Error_Pct'][:8]
 
         fig = make_subplots(specs=[[{"secondary_y": True}]])
         fig.add_trace(go.Bar(x=merged.index, y=merged['Abs_Error_Pct'], name='Model Error (%)', marker_color='rgba(0, 0, 255, 0.3)'), secondary_y=False)
@@ -81,7 +79,6 @@ def generate_macro_profiler(run_dir: Path, forecasts_df: pd.DataFrame, metrics_d
         for i, col in enumerate(macro_cols):
             fig.add_trace(go.Scatter(x=merged.index, y=merged[col], mode='lines', name=f"{col} (% YoY)", line=dict(width=2), visible=(i==0)), secondary_y=True)
 
-        # Dropdown to toggle macro indicators
         buttons = []
         for i, col in enumerate(macro_cols):
             vis = [True] + [j == i for j in range(len(macro_cols))]
@@ -118,21 +115,45 @@ def generate_trading_plots(run_dir: Path):
     df['Peak'] = df['Cumulative_Real'].cummax()
     df['Drawdown'] = (df['Cumulative_Real'] - df['Peak']) / df['Peak'] * 100
 
-    # ELECTIVE 2: Regime & Volatility Scatter
-    df['Surprise_Magnitude'] = np.abs(df['Actual'] - df['Strike']) # Volatility Proxy
-    fig_scatter = go.Figure()
+    # ---------------------------------------------------------
+    # ELECTIVE 2: Regime Volatility Scatter (REDESIGNED)
+    # ---------------------------------------------------------
+    df['Surprise_Magnitude'] = np.abs(df['Actual'] - df['Strike'])
+    df['Abs_Edge'] = df['Edge'].abs() # Plot absolute conviction
     
+    fig_scatter = go.Figure()
     wins = df[df['Outcome'] == 'WIN']
     losses = df[df['Outcome'] == 'LOSS']
     
-    fig_scatter.add_trace(go.Scatter(x=wins['Surprise_Magnitude'], y=wins['Edge'], mode='markers', name='WIN', marker=dict(color='rgba(0, 150, 0, 0.7)', size=12, line=dict(width=1, color='darkgreen')), text=wins.index.strftime('%b %Y')))
-    fig_scatter.add_trace(go.Scatter(x=losses['Surprise_Magnitude'], y=losses['Edge'], mode='markers', name='LOSS', marker=dict(color='rgba(255, 0, 0, 0.7)', size=12, symbol='x', line=dict(width=1, color='darkred')), text=losses.index.strftime('%b %Y')))
+    # Use opacity=0.6 so stacked dots bleed through and become darker
+    fig_scatter.add_trace(go.Scatter(
+        x=wins['Surprise_Magnitude'], y=wins['Abs_Edge'], 
+        mode='markers', name='WIN', 
+        marker=dict(color='rgba(0, 150, 0, 0.6)', size=14, line=dict(width=1, color='darkgreen')), 
+        text=wins.index.strftime('%b %Y') + "<br>PnL: $" + wins['Real_PnL'].round(2).astype(str) + "<br>Raw Edge: " + wins['Edge'].round(3).astype(str),
+        hoverinfo='text'
+    ))
     
-    fig_scatter.update_layout(title="Regime Volatility: Trade Edge vs Economic Surprise", xaxis_title="Economic Surprise |Actual - Consensus| (Volatility Proxy)", yaxis_title="Calculated Probability Edge", template="plotly_white")
+    fig_scatter.add_trace(go.Scatter(
+        x=losses['Surprise_Magnitude'], y=losses['Abs_Edge'], 
+        mode='markers', name='LOSS', 
+        marker=dict(color='rgba(255, 0, 0, 0.6)', size=14, line=dict(width=1, color='darkred')), 
+        text=losses.index.strftime('%b %Y') + "<br>PnL: $" + losses['Real_PnL'].round(2).astype(str) + "<br>Raw Edge: " + losses['Edge'].round(3).astype(str),
+        hoverinfo='text'
+    ))
+    
+    fig_scatter.update_layout(
+        title="Conviction Magnitude vs Economic Surprise", 
+        xaxis_title="Economic Surprise |Actual - Consensus| (Log Scale)", 
+        yaxis_title="Model Conviction |Calculated Edge|", 
+        xaxis_type="log", # Fixes the outlier squish
+        template="plotly_white"
+    )
     fig_scatter.write_html(str(run_dir / "dash_volatility_scatter.html"))
 
-    # ELECTIVE 3: Rolling Risk Suite (Sharpe/Sortino/Calmar)
-    # Resample to monthly to fill non-trading gaps for continuous rolling math
+    # ---------------------------------------------------------
+    # ELECTIVE 3: Rolling Risk Suite
+    # ---------------------------------------------------------
     df_monthly = df.resample('ME').last()
     df_monthly['Cumulative_Real'] = df_monthly['Cumulative_Real'].ffill()
     df_monthly['Ret'] = df_monthly['Cumulative_Real'].pct_change().fillna(0)
@@ -162,24 +183,66 @@ def generate_trading_plots(run_dir: Path):
     fig_risk.update_layout(updatemenus=[dict(active=0, buttons=buttons_risk, x=1.15, y=1.15)], title="Rolling 12-Month Sharpe Ratio", template="plotly_white", yaxis_title="Ratio")
     fig_risk.write_html(str(run_dir / "dash_rolling_risk.html"))
 
-    # ELECTIVE 4: Sparse-Execution Monthly Heatmap
+    # ---------------------------------------------------------
+    # ELECTIVE 4: Continuous PnL Heatmap
+    # ---------------------------------------------------------
     df_heat = df.copy()
     df_heat['Year'] = df_heat.index.year
     df_heat['Month'] = df_heat.index.month
-    df_heat['Score'] = df_heat['Outcome'].map({'WIN': 1, 'LOSS': -1}).fillna(0)
     
-    pivot = df_heat.pivot_table(index='Year', columns='Month', values='Score', aggfunc='sum')
+    # Create parallel pivot tables for rich hover data
+    pivot_pnl = df_heat.pivot_table(index='Year', columns='Month', values='Real_PnL', aggfunc='sum')
+    pivot_edge = df_heat.pivot_table(index='Year', columns='Month', values='Edge', aggfunc='mean')
+    pivot_outcome = df_heat.pivot_table(index='Year', columns='Month', values='Outcome', aggfunc='first')
+    
     for m in range(1, 13):
-        if m not in pivot.columns: pivot[m] = np.nan
-    pivot = pivot.reindex(range(pivot.index.min(), pivot.index.max() + 1)).fillna(0)
+        if m not in pivot_pnl.columns: 
+            pivot_pnl[m] = np.nan
+            pivot_edge[m] = np.nan
+            pivot_outcome[m] = np.nan
+            
+    pivot_pnl = pivot_pnl.reindex(range(pivot_pnl.index.min(), pivot_pnl.index.max() + 1))
+    pivot_edge = pivot_edge.reindex(pivot_pnl.index)
+    pivot_outcome = pivot_outcome.reindex(pivot_pnl.index)
     
-    # Custom 3-state colorscale: Red (-1), Gray (0), Green (1)
-    colorscale = [[0.0, '#d62728'], [0.5, '#f0f0f0'], [1.0, '#2ca02c']]
+    # Build Hover Text Matrix
+    hover_text = []
+    for year in pivot_pnl.index:
+        row_text = []
+        for month in range(1, 13):
+            pnl = pivot_pnl.loc[year, month]
+            outcome = pivot_outcome.loc[year, month]
+            # Check if NaNs or 0 PnL with no outcome string (meaning no trade occurred)
+            if pd.isna(pnl) or (pnl == 0 and pd.isna(outcome)):
+                row_text.append(f"<b>{year}-{month:02d}</b><br>No Trade Triggered")
+            else:
+                edge = pivot_edge.loc[year, month]
+                row_text.append(f"<b>{year}-{month:02d}</b><br>Outcome: {outcome}<br>Realized PnL: ${pnl:,.2f}<br>Raw Edge: {edge:.3f}")
+        hover_text.append(row_text)
     
-    hover_text = [[f"{year}-{month:02d}<br>{'WIN' if pivot.loc[year, month] > 0 else 'LOSS' if pivot.loc[year, month] < 0 else 'No Trade'}" for month in range(1, 13)] for year in pivot.index]
+    # Continuous color scale centered at 0 (Gray)
+    custom_colorscale = [[0.0, 'rgba(214, 39, 40, 0.9)'], [0.5, 'rgba(240, 240, 240, 1.0)'], [1.0, 'rgba(44, 160, 44, 0.9)']]
+
+    fig_heat = go.Figure(data=go.Heatmap(
+        z=pivot_pnl.fillna(0).values, # Fill NAs with 0 so they turn gray
+        x=[str(m) for m in range(1, 13)], 
+        y=pivot_pnl.index, 
+        colorscale=custom_colorscale, 
+        zmid=0, # Forces 0 to be exactly in the middle of the scale
+        showscale=True, 
+        colorbar=dict(title="PnL ($)"),
+        text=hover_text, 
+        hoverinfo="text", 
+        xgap=2, ygap=2
+    ))
     
-    fig_heat = go.Figure(data=go.Heatmap(z=pivot.values, x=[str(m) for m in range(1, 13)], y=pivot.index, colorscale=colorscale, zmin=-1, zmax=1, showscale=False, text=hover_text, hoverinfo="text", xgap=2, ygap=2))
-    fig_heat.update_layout(title="Sparse-Execution Heatmap (Green=Win, Red=Loss, Gray=Cash)", xaxis_title="Month", yaxis_title="Year", template="plotly_white", yaxis=dict(autorange="reversed"))
+    fig_heat.update_layout(
+        title="Execution Heatmap (Realized PnL by Month)", 
+        xaxis_title="Month", 
+        yaxis_title="Year", 
+        template="plotly_white", 
+        yaxis=dict(autorange="reversed", dtick=1) # dtick=1 forces integer years
+    )
     fig_heat.write_html(str(run_dir / "dash_execution_heatmap.html"))
 
 def generate_all_dashboard_plots(panel_name: str = "mrts_national"):
@@ -190,13 +253,8 @@ def generate_all_dashboard_plots(panel_name: str = "mrts_national"):
     
     run_dir, forecasts_df, metrics_df = load_latest_run_frames()
     
-    # Generate Core Forecast Plot
     generate_forecast_plot(run_dir, forecasts_df, metrics_df, panel_name)
-    
-    # Generate Elective 1 (Macro Profiler)
     generate_macro_profiler(run_dir, forecasts_df, metrics_df, panel_name)
-    
-    # Generate Trading Plots (Electives 2, 3, 4)
     generate_trading_plots(run_dir)
     
     print("="*50)

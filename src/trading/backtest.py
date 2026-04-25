@@ -602,6 +602,19 @@ def _run_weight_monte_carlo(
     )
     return base_signals_df, all_trades_df, path_results_df, results
 
+def _clip_to_test_start(data: StrategyData, test_ts: pd.Timestamp) -> StrategyData:
+    updates = {}
+    for field in ("forecasts", "mrts"):
+        df = getattr(data, field)
+        if df is None or df.empty:
+            continue
+        if "date" in df.columns:
+            updates[field] = df[pd.to_datetime(df["date"]) >= test_ts].copy()
+        else:
+            updates[field] = df[df.index >= test_ts].copy()
+    return data.copy_with(**updates) if updates else data
+
+
 def _run_forecastex_loop(
     signals_df: pd.DataFrame,
     forecasts_df: pd.DataFrame,
@@ -658,6 +671,12 @@ class BacktestEngine:
                 "run_portfolio() requires data.prices. "
                 "Load market data before running the trading pipeline."
             )
+
+        # Clip forecasts to the held-out test period so evaluation never
+        # covers the training/validation window used for model selection.
+        test_start = config.get("data", {}).get("test_start")
+        if test_start:
+            data = _clip_to_test_start(data, pd.Timestamp(test_start))
 
         modes = test_modes if test_modes is not None else _test_modes_from_config()
         default_ticker = strategy.default_ticker or ""

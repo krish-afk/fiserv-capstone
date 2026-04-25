@@ -497,6 +497,69 @@ def _risk_metrics_from_trades(trades_df: pd.DataFrame, initial_cash: float, fina
         else None,
     }
 
+def _metric_from_results(results: dict, key: str, stat: str = "median") -> Optional[float]:
+    value = results.get(key)
+
+    if value is None:
+        metric_summary = (results.get("metrics") or {}).get(key)
+        if isinstance(metric_summary, dict):
+            value = metric_summary.get(stat)
+
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    if pd.isna(num):
+        return None
+
+    return num
+
+
+def _pct_points_to_decimal(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    return float(value) / 100.0
+
+def _risk_metrics_from_monte_carlo_paths(
+    path_results_df: pd.DataFrame,
+    initial_cash: float,
+    final_value: Optional[float],
+) -> dict:
+    if path_results_df is None or path_results_df.empty or "return_pct" not in path_results_df.columns:
+        cumulative_return = None
+        if initial_cash and final_value is not None:
+            cumulative_return = (float(final_value) / float(initial_cash)) - 1.0
+
+        return {
+            "value_at_risk_95": None,
+            "conditional_loss_95": None,
+            "cumulative_return": cumulative_return,
+        }
+
+    returns_pct = pd.to_numeric(path_results_df["return_pct"], errors="coerce").dropna()
+    if returns_pct.empty:
+        cumulative_return = None
+        if initial_cash and final_value is not None:
+            cumulative_return = (float(final_value) / float(initial_cash)) - 1.0
+
+        return {
+            "value_at_risk_95": None,
+            "conditional_loss_95": None,
+            "cumulative_return": cumulative_return,
+        }
+
+    returns = returns_pct / 100.0
+    var_95 = float(returns.quantile(0.05))
+    tail = returns[returns <= var_95]
+    cvar_95 = float(tail.mean()) if not tail.empty else var_95
+
+    return {
+        "value_at_risk_95": var_95,
+        "conditional_loss_95": cvar_95,
+        "cumulative_return": float(returns.median()),
+    }
+
 
 def _equity_and_pnl_payload(equity_curve_df: pd.DataFrame, initial_cash: float) -> tuple[list[dict], list[dict]]:
     if equity_curve_df is None or equity_curve_df.empty:
@@ -563,7 +626,7 @@ def get_dashboard_options(cfg: Optional[dict] = None) -> dict:
         "trading_modes": ["backtest", "monte_carlo"],
         "defaults": {
             "panels": list(cfg["experiment"]["panels"]),
-            "ranking_metric": "rmse",
+            "ranking_metric": "mape",
             "top_k": 5,
             "run_trading": True,
         },
@@ -584,7 +647,7 @@ def run_dashboard_pipeline(payload: dict, cfg: Optional[dict] = None) -> dict:
 
     horizon = int(cfg["forecasting"]["horizons"][0])
     min_train_size = int(cfg["forecasting"]["walk_forward_min_train"])
-    rank_metric = str(payload.get("ranking_metric", "rmse"))
+    rank_metric = str(payload.get("ranking_metric", "mape"))
     top_k = int(payload.get("top_k", 5))
 
     exp_result = run_experiment_with_details(
@@ -667,6 +730,7 @@ def run_dashboard_pipeline(payload: dict, cfg: Optional[dict] = None) -> dict:
         )
 
         trades_df = trading_run["trades_df"]
+        path_results_df = trading_run.get("path_results_df", pd.DataFrame())
         equity_curve_df = trading_run["equity_curve_df"]
         results = dict(trading_run["results"])
 
@@ -677,14 +741,28 @@ def run_dashboard_pipeline(payload: dict, cfg: Optional[dict] = None) -> dict:
         confidence_curve = _confidence_curve_payload(signals_df)
         metadata_curves = _metadata_numeric_curves(signals_df)
 
-        initial_cash = float(results.get("initial_cash", cfg.get("trading", {}).get("portfolio", {}).get("initial_cash", 100000)))
-        final_value = results.get("final_value")
-
-        extra_risk = _risk_metrics_from_trades(
-            trades_df=trades_df,
-            initial_cash=initial_cash,
-            final_value=final_value,
+        initial_cash = float(
+            results.get(
+                "initial_cash",
+                cfg.get("trading", {}).get("portfolio", {}).get("initial_cash", 100000),
+            )
         )
+
+        final_value = _metric_from_results(results, "final_value")
+        is_monte_carlo = str(trading_run.get("test_mode", "")).lower() == "monte_carlo"
+
+        if is_monte_carlo:
+            extra_risk = _risk_metrics_from_monte_carlo_paths(
+                path_results_df=path_results_df,
+                initial_cash=initial_cash,
+                final_value=final_value,
+            )
+        else:
+            extra_risk = _risk_metrics_from_trades(
+                trades_df=trades_df,
+                initial_cash=initial_cash,
+                final_value=final_value,
+            )
         equity_curve, pnl_curve = _equity_and_pnl_payload(
             equity_curve_df=equity_curve_df,
             initial_cash=initial_cash,
@@ -700,14 +778,14 @@ def run_dashboard_pipeline(payload: dict, cfg: Optional[dict] = None) -> dict:
             "metrics": _json_safe({
                 "value_at_risk_95": extra_risk["value_at_risk_95"],
                 "conditional_loss_95": extra_risk["conditional_loss_95"],
-                "max_drawdown_pct": results.get("max_drawdown_pct"),
-                "win_rate": results.get("win_rate"),
+                "max_drawdown_pct": _pct_points_to_decimal(_metric_from_results(results, "max_drawdown_pct")),
+                "win_rate": _metric_from_results(results, "win_rate"),
                 "cumulative_return": extra_risk["cumulative_return"],
-                "num_trades": results.get("num_trades"),
-                "final_value": results.get("final_value"),
-                "absolute_return": results.get("absolute_return"),
-                "annualized_return_pct": results.get("annualized_return_pct"),
-                "sharpe_ratio": results.get("sharpe_ratio"),
+                "num_trades": _metric_from_results(results, "num_trades"),
+                "final_value": final_value,
+                "absolute_return": _metric_from_results(results, "absolute_return"),
+                "annualized_return_pct": _pct_points_to_decimal(_metric_from_results(results, "annualized_return_pct")),
+                "sharpe_ratio": _metric_from_results(results, "sharpe_ratio"),
             }),
             "equity_curve": equity_curve,
             "pnl_curve": pnl_curve,

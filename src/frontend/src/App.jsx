@@ -24,6 +24,54 @@ function classNames(...parts) {
   return parts.filter(Boolean).join(' ')
 }
 
+const BRAND_LOGOS = [
+  {
+    name: 'Georgia Tech',
+    fallback: 'GT',
+    variant: 'gt',
+    assets: ['public/gt-logo.png', '/logos/gt-logo.png', '/GT-logo.svg', '/GT-logo.png'],
+  },
+  {
+    name: 'Fiserv',
+    fallback: 'fiserv',
+    variant: 'fiserv',
+    assets: ['public/fiserv-logo.png', '/logos/fiserv-logo.png', '/Fiserv-logo.svg', '/Fiserv-logo.png'],
+  },
+]
+
+function barColorForSeries(series, index) {
+  const key = String(series?.key || '').toLowerCase()
+
+  if (key.includes('rmse') || key.includes('mae') || key.includes('mape')) {
+    return GT_NAVY
+  }
+
+  return CHART_PALETTE[index % CHART_PALETTE.length]
+}
+
+function BrandLogo({ logo }) {
+  const [assetIndex, setAssetIndex] = useState(0)
+  const src = logo.assets?.[assetIndex]
+  const hasAsset = Boolean(src) && assetIndex < logo.assets.length
+
+  return (
+    <div
+      className={classNames('brand-logo-card', `brand-logo-card--${logo.variant}`)}
+      aria-label={`${logo.name} logo`}
+    >
+      {hasAsset ? (
+        <img
+          src={src}
+          alt={`${logo.name} logo`}
+          onError={() => setAssetIndex((current) => current + 1)}
+        />
+      ) : (
+        <span>{logo.fallback}</span>
+      )}
+    </div>
+  )
+}
+
 function buildDefaultStrategyParams(strategy) {
     const out = {}
     for (const param of strategy?.parameters || []) {
@@ -151,7 +199,7 @@ function buildDefaultStrategyParams(strategy) {
       panels: defaults.panels || [],
       models: [],
       feature_sets: [],
-      ranking_metric: defaults.ranking_metric || 'rmse',
+      ranking_metric: defaults.ranking_metric || 'mape',
       top_k: defaults.top_k || 5,
       run_trading: defaults.run_trading ?? true,
       trading_mode: 'backtest',
@@ -479,99 +527,123 @@ function Tabs({ items, activeKey, onChange }) {
   )
 }
 
+const GT_NAVY = '#003057'
+const GT_GOLD = '#B3A369'
+const GT_DARK_GOLD = '#857437'
+const FISERV_ORANGE = '#FF6600'
+const BRAND_INK = '#142033'
+const BRAND_MUTED = '#667085'
+const BRAND_SUCCESS = '#16833A'
+const BRAND_RISK = '#C33A1F'
+
 const CHART_PALETTE = [
-    '#2563eb', // blue
-    '#dc2626', // red
-    '#059669', // green
-    '#d97706', // amber
-    '#7c3aed', // violet
-    '#0891b2', // cyan
-    '#ea580c', // orange
-    '#4f46e5', // indigo
-  ]
+  FISERV_ORANGE,
+  GT_NAVY,
+  GT_GOLD,
+  '#7A542E',
+  '#B94700',
+  '#4C6A85',
+  '#A28D5B',
+  '#1E5B79',
+]
   
-  function styleForSeries(series, index) {
-    const key = String(series?.key || '').toLowerCase()
-    const label = String(series?.label || '').toLowerCase()
-  
-    if (key === 'actual' || label === 'actual') {
-      return {
-        stroke: '#111827',
-        strokeWidth: 3,
-        strokeDasharray: undefined,
-      }
-    }
-  
-    if (key.includes('naive') || label.includes('naive')) {
-      return {
-        stroke: '#6b7280',
-        strokeWidth: 2.5,
-        strokeDasharray: '6 4',
-      }
-    }
-  
-    if (key.includes('model_abs_error')) {
-      return {
-        stroke: '#dc2626',
-        strokeWidth: 2.5,
-        strokeDasharray: undefined,
-      }
-    }
-  
-    if (key.includes('naive_abs_error')) {
-      return {
-        stroke: '#6b7280',
-        strokeWidth: 2.5,
-        strokeDasharray: '6 4',
-      }
-    }
-  
-    if (key.includes('drawdown')) {
-      return {
-        stroke: '#dc2626',
-        strokeWidth: 2.5,
-        strokeDasharray: undefined,
-      }
-    }
-  
-    if (key.includes('cumulative_return')) {
-      return {
-        stroke: '#059669',
-        strokeWidth: 2.5,
-        strokeDasharray: undefined,
-      }
-    }
-  
-    if (key.includes('equity')) {
-      return {
-        stroke: '#2563eb',
-        strokeWidth: 2.5,
-        strokeDasharray: undefined,
-      }
-    }
-  
-    if (key.includes('confidence')) {
-      return {
-        stroke: '#7c3aed',
-        strokeWidth: 2.5,
-        strokeDasharray: undefined,
-      }
-    }
-  
-    if (key.includes('net_return')) {
-      return {
-        stroke: '#d97706',
-        strokeWidth: 2,
-        strokeDasharray: undefined,
-      }
-    }
-  
+function styleForSeries(series, index) {
+  const key = String(series?.key || '').toLowerCase()
+  const label = String(series?.label || '').toLowerCase()
+
+  if (key === 'actual' || label === 'actual') {
     return {
-      stroke: CHART_PALETTE[index % CHART_PALETTE.length],
+      stroke: GT_NAVY,
+      strokeWidth: 3.2,
+      strokeDasharray: undefined,
+    }
+  }
+
+  if (
+    key === 'model_forecast' ||
+    label.includes('lasso') ||
+    label.includes('ridge') ||
+    label.includes('elastic') ||
+    label.includes('xgboost') ||
+    label.includes('random forest')
+  ) {
+    return {
+      stroke: FISERV_ORANGE,
+      strokeWidth: 3,
+      strokeDasharray: undefined,
+    }
+  }
+
+  if (key.includes('naive') || label.includes('naive')) {
+    return {
+      stroke: '#596B82',
+      strokeWidth: 2.4,
+      strokeDasharray: '8 5',
+    }
+  }
+
+  if (key.includes('model_abs_error')) {
+    return {
+      stroke: BRAND_RISK,
       strokeWidth: 2.5,
       strokeDasharray: undefined,
     }
   }
+
+  if (key.includes('naive_abs_error')) {
+    return {
+      stroke: BRAND_MUTED,
+      strokeWidth: 2.5,
+      strokeDasharray: '6 4',
+    }
+  }
+
+  if (key.includes('drawdown')) {
+    return {
+      stroke: BRAND_RISK,
+      strokeWidth: 2.5,
+      strokeDasharray: undefined,
+    }
+  }
+
+  if (key.includes('cumulative_return')) {
+    return {
+      stroke: BRAND_SUCCESS,
+      strokeWidth: 2.5,
+      strokeDasharray: undefined,
+    }
+  }
+
+  if (key.includes('equity')) {
+    return {
+      stroke: GT_NAVY,
+      strokeWidth: 2.5,
+      strokeDasharray: undefined,
+    }
+  }
+
+  if (key.includes('confidence')) {
+    return {
+      stroke: GT_DARK_GOLD,
+      strokeWidth: 2.5,
+      strokeDasharray: undefined,
+    }
+  }
+
+  if (key.includes('net_return')) {
+    return {
+      stroke: FISERV_ORANGE,
+      strokeWidth: 2,
+      strokeDasharray: undefined,
+    }
+  }
+
+  return {
+    stroke: CHART_PALETTE[index % CHART_PALETTE.length],
+    strokeWidth: 2,
+    strokeDasharray: undefined,
+  }
+}
   
   function fillForSeries(series, index) {
     const key = String(series?.key || '').toLowerCase()
@@ -581,6 +653,29 @@ const CHART_PALETTE = [
     }
   
     return CHART_PALETTE[index % CHART_PALETTE.length]
+  }
+
+  const chartAxisStyle = { fontSize: 12, fill: BRAND_MUTED }
+
+  const chartAxisLine = { stroke: '#D8D0B6' }
+  
+  const chartTooltipStyle = {
+    borderRadius: 16,
+    border: '1px solid #DED6BE',
+    boxShadow: '0 18px 36px rgba(0, 48, 87, 0.12)',
+  }
+
+  const TRADING_CHART_KEYS = new Set([
+    'equity_curve',
+    'cumulative_return_curve',
+    'drawdown_curve',
+    'period_return_curve',
+    'weights_curve',
+    'confidence_curve',
+  ])
+  
+  function isCoreTradingChart(chart) {
+    return TRADING_CHART_KEYS.has(chart?.key)
   }
 
   function ChartCard({ chart }) {
@@ -597,43 +692,63 @@ const CHART_PALETTE = [
             <ResponsiveContainer width="100%" height={340}>
               {isBar ? (
                 <BarChart data={chart.rows}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey={chart.x_key} tick={{ fontSize: 12 }} minTickGap={20} />
-                  <YAxis tick={{ fontSize: 12 }} width={72} />
-                  <Tooltip />
-                  <Legend />
-                  {chart.series.map((series, index) => (
-                    <Bar
-                      key={series.key}
-                      dataKey={series.key}
-                      name={series.label}
-                      fill={fillForSeries(series, index)}
-                      isAnimationActive={false}
-                    />
-                  ))}
-                </BarChart>
+                <CartesianGrid strokeDasharray="3 3" stroke="#E5DDC5" />
+                <XAxis
+                  dataKey={chart.x_key}
+                  tick={chartAxisStyle}
+                  axisLine={chartAxisLine}
+                  tickLine={chartAxisLine}
+                  minTickGap={20}
+                />
+                <YAxis
+                  tick={chartAxisStyle}
+                  axisLine={chartAxisLine}
+                  tickLine={chartAxisLine}
+                  width={72}
+                />
+                <Tooltip contentStyle={chartTooltipStyle} />
+                <Legend />
+                {chart.series.map((series, index) => (
+                  <Bar
+                    key={series.key}
+                    dataKey={series.key}
+                    name={series.label || formatLabel(series.key)}
+                    fill={barColorForSeries(series, index)}
+                    radius={[8, 8, 0, 0]}
+                  />
+                ))}
+              </BarChart>
               ) : (
                 <LineChart data={chart.rows}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey={chart.x_key} tick={{ fontSize: 12 }} minTickGap={20} />
-                  <YAxis tick={{ fontSize: 12 }} width={72} />
-                  <Tooltip />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#E5DDC5" />
+                  <XAxis
+                    dataKey={chart.x_key}
+                    tick={chartAxisStyle}
+                    axisLine={chartAxisLine}
+                    tickLine={chartAxisLine}
+                    minTickGap={20}
+                  />
+                  <YAxis
+                    tick={chartAxisStyle}
+                    axisLine={chartAxisLine}
+                    tickLine={chartAxisLine}
+                    width={72}
+                  />
+                  <Tooltip contentStyle={chartTooltipStyle} />
                   <Legend />
                   {chart.series.map((series, index) => {
                     const style = styleForSeries(series, index)
-  
+
                     return (
                       <Line
                         key={series.key}
                         type="monotone"
                         dataKey={series.key}
-                        name={series.label}
-                        dot={false}
-                        activeDot={{ r: 4 }}
+                        name={series.label || formatLabel(series.key)}
                         stroke={style.stroke}
                         strokeWidth={style.strokeWidth}
                         strokeDasharray={style.strokeDasharray}
-                        isAnimationActive={false}
+                        dot={false}
                       />
                     )
                   })}
@@ -646,39 +761,113 @@ const CHART_PALETTE = [
     )
   }
 
-function DataTable({ table }) {
-  if (!table) return null
+  function tableSemanticColumnKey(column) {
+    const key = String(column?.key || '').toLowerCase()
+    const label = String(column?.label || '').toLowerCase()
+  
+    if (key === 'panel' || key === 'panel_name' || label === 'panel') return 'panel'
+    if (key === 'model' || key === 'model_name' || label === 'model') return 'model'
+    if (key === 'feature_set' || key === 'features' || label === 'feature set') return 'feature_set'
+    if (key === 'rmse' || label === 'rmse') return 'rmse'
+    if (key === 'mae' || label === 'mae') return 'mae'
+    if (key === 'mape' || label === 'mape') return 'mape'
+    if (key === 'dir_acc' || key === 'directional_accuracy' || label.includes('directional')) return 'directional_accuracy'
+    if (key === 'r2' || key === 'r_squared' || label === 'r²') return 'r2'
+  
+    return key
+  }
+  
+  function tableColumnClassName(column) {
+    const semanticKey = tableSemanticColumnKey(column)
+  
+    return classNames(
+      'table-column',
+      semanticKey && `table-column--${semanticKey}`,
+    )
+  }
+  
+  function shouldTruncateTableCell(column) {
+    const semanticKey = tableSemanticColumnKey(column)
+  
+    return [
+      'panel',
+      'model',
+      'feature_set',
+      'strategy',
+      'weights',
+      'ticker_returns',
+      'metadata',
+    ].includes(semanticKey)
+  }
+  
+  function renderTableCell(column, value) {
+    const rendered = renderCell(column.key, value)
+  
+    if (!shouldTruncateTableCell(column)) {
+      return rendered
+    }
+  
+    const title = value === null || value === undefined ? '' : String(value)
+  
+    return (
+      <span className="table-cell-truncate" title={title}>
+        {rendered}
+      </span>
+    )
+  }
 
-  return (
-    <div className="content-card">
-      <div className="panel-title">{table.title}</div>
-      {table.rows?.length ? (
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                {table.columns.map((column) => (
-                  <th key={column.key}>{column.label}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {table.rows.map((row, index) => (
-                <tr key={`${table.key}-${index}`}>
+  function DataTable({ table }) {
+    if (!table) return null
+  
+    return (
+      <div className="content-card">
+        <div className="panel-title">{table.title}</div>
+        {table.rows?.length ? (
+          <div className="table-scroll">
+            <table className="data-table">
+            <colgroup>
+              {table.columns.map((column) => (
+                <col
+                  key={column.key}
+                  className={tableColumnClassName(column)}
+                />
+              ))}
+            </colgroup>
+              <thead>
+                <tr>
                   {table.columns.map((column) => (
-                    <td key={column.key}>{renderCell(column.key, row[column.key])}</td>
+                    <th
+                      key={column.key}
+                      className={tableColumnClassName(column)}
+                      title={column.label}
+                    >
+                      {column.label}
+                    </th>
                   ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="empty-state">{table.empty_message || 'No data available.'}</div>
-      )}
-    </div>
-  )
-}
+              </thead>
+              <tbody>
+                {table.rows.map((row, index) => (
+                  <tr key={`${table.key}-${index}`}>
+                    {table.columns.map((column) => (
+                      <td
+                        key={column.key}
+                        className={tableColumnClassName(column)}
+                      >
+                        {renderTableCell(column, row[column.key])}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="empty-state">{table.empty_message || 'No data available.'}</div>
+        )}
+      </div>
+    )
+  }
 
 function RunHistory({ runs, onSelect }) {
   return (
@@ -1005,13 +1194,38 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="hero">
-        <div>
-          <p className="eyebrow">Forecasting + Trading Dashboard</p>
-          <h1>Macro Forecast Pipeline Control Center</h1>
-          <p className="hero-copy">
-            Configure panels, models, feature sets, and trading strategy. Submit a run, watch progress,
-            and review forecasting and trading outputs in charts and tables.
-          </p>
+        <div className="brand-bar">
+          <div className="brand-lockup" aria-label="Georgia Tech and Fiserv partnership">
+            {BRAND_LOGOS.map((logo, index) => (
+              <div key={logo.name} className="brand-lockup-item">
+                <BrandLogo logo={logo} />
+                {index < BRAND_LOGOS.length - 1 ? <span className="brand-divider">×</span> : null}
+              </div>
+            ))}
+          </div>
+
+          <div className="brand-badge">GT × Fiserv analytics</div>
+        </div>
+
+        <div className="hero-grid">
+          <div>
+            <p className="eyebrow">Forecasting + Trading Dashboard</p>
+            <h1>GT × Fiserv Macro Forecast Control Center</h1>
+            <p className="hero-copy">
+              Configure panels, models, feature sets, and trading strategy. Submit a run, watch progress,
+              and review forecasting and trading outputs in charts and tables.
+            </p>
+          </div>
+
+          <div className="hero-accent-card" aria-label="Dashboard capabilities">
+            <div className="hero-accent-kicker">Pipeline</div>
+            <div className="hero-accent-title">Forecast → Backtest → Risk</div>
+            <div className="hero-accent-grid">
+              <span>Macro panels</span>
+              <span>Model ranking</span>
+              <span>Strategy runs</span>
+            </div>
+          </div>
         </div>
       </header>
       <div className="page-stack">
@@ -1057,9 +1271,9 @@ export default function App() {
             value={form.ranking_metric}
             onChange={(e) => updateField('ranking_metric', e.target.value)}
             >
+            <option value="mape">MAPE</option>
             <option value="rmse">RMSE</option>
             <option value="mae">MAE</option>
-            <option value="mape">MAPE</option>
             </select>
         </div>
 
@@ -1124,7 +1338,9 @@ export default function App() {
               </select>
             </div>
           </div>
-
+          <p className="field-helper trading-date-helper">
+            Trading dates define the strategy evaluation window only. Forecasting still uses the full available FSBI history.
+          </p>
           <div className="trading-dates-grid">
             <div className="input-group">
                 <label className="field-label">Trade Start Date</label>
@@ -1171,7 +1387,7 @@ export default function App() {
 
         <div className="config-block config-block--actions">
           <button className="primary-button" type="submit" disabled={submitting || !form.panels.length}>
-            {submitting ? 'Starting Run…' : 'Run Dashboard Pipeline'}
+            {submitting ? 'Starting Run…' : 'Run Pipeline'}
           </button>
           <RunHistory runs={recentRuns} onSelect={handleLoadRun} />
         </div>
@@ -1306,8 +1522,10 @@ export default function App() {
             ))}
             </div>
 
-            {(results.ui?.trading?.charts?.all || []).map((chart) => (
-              <ChartCard key={chart.key} chart={chart} />
+            {(results.ui?.trading?.charts?.all || [])
+              .filter(isCoreTradingChart)
+              .map((chart) => (
+                <ChartCard key={chart.key} chart={chart} />
             ))}
 
           </section>

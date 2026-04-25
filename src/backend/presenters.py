@@ -163,7 +163,7 @@ def build_top_models_table(panel_name: str, rows: list[dict]) -> dict:
             {"key": "rmse", "label": "RMSE"},
             {"key": "mae", "label": "MAE"},
             {"key": "mape", "label": "MAPE"},
-            {"key": "dir_acc", "label": "Directional Accuracy"},
+            {"key": "dir_acc", "label": "Directional Acc"},
             {"key": "r2", "label": "R²"},
         ],
         rows=rows,
@@ -182,7 +182,7 @@ def build_metrics_table(rows: list[dict]) -> dict:
             {"key": "rmse", "label": "RMSE"},
             {"key": "mae", "label": "MAE"},
             {"key": "mape", "label": "MAPE"},
-            {"key": "dir_acc", "label": "Directional Accuracy"},
+            {"key": "dir_acc", "label": "Directional Acc"},
             {"key": "r2", "label": "R²"},
         ],
         rows=rows,
@@ -281,7 +281,8 @@ def build_trading_ui(trading: Optional[dict]) -> Optional[dict]:
     period_return_curve = trading.get("period_return_curve", [])
     weights_curve = trading.get("weights_curve")
     confidence_curve = trading.get("confidence_curve")
-    metadata_curves = trading.get("metadata_curves", [])
+    # Forecast/prediction metadata curves are intentionally not shown in the Trading tab.
+    # The Forecasting tab already owns forecast-vs-actual visualizations.
 
     cards = [
         build_kpi_card(key="final_value", label="Final Portfolio Value", value=metrics.get("final_value"), kind="currency"),
@@ -345,17 +346,6 @@ def build_trading_ui(trading: Optional[dict]) -> Optional[dict]:
                 x_key="date",
                 series=[{"key": "confidence", "label": "Confidence"}],
                 rows=confidence_curve,
-            )
-        )
-
-    for item in metadata_curves:
-        charts.append(
-            build_line_chart(
-                key=f"metadata_{item.get('key')}",
-                title=item.get("title", item.get("key")),
-                x_key="date",
-                series=item.get("series", []),
-                rows=item.get("rows", []),
             )
         )
 

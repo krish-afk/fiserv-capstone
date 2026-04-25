@@ -345,6 +345,17 @@ def _read_trades_artifact(output_dir: Path, strategy_name: str, test_mode: str) 
 
     return pd.read_csv(path)
 
+def _read_path_results_artifact(output_dir: Path, strategy_name: str, test_mode: str) -> pd.DataFrame:
+    mode = str(test_mode).strip().lower()
+    if mode != "monte_carlo":
+        return pd.DataFrame()
+
+    path = output_dir / f"monte_carlo_path_results_{strategy_name}.csv"
+    if not path.exists():
+        return pd.DataFrame()
+
+    return pd.read_csv(path)
+
 
 def build_strategy_data_from_frames(
     strategy: BaseStrategy,
@@ -368,17 +379,9 @@ def build_strategy_data_from_frames(
         metrics_df=metrics_df,
         panel_name=primary_panel,
     )
-    primary_forecasts = _filter_frame_by_date(
-        primary_forecasts,
-        date_col="date",
-        start_date=trade_start_date,
-        end_date=trade_end_date,
-    )
 
     if primary_forecasts is None or primary_forecasts.empty:
-        raise ValueError(
-            f"No forecast rows available for panel '{primary_panel}' in the selected trade window."
-        )
+        raise ValueError(f"No forecast rows available for panel '{primary_panel}'.")
 
     mrts_df = None
     if "mrts" in strategy.required_inputs:
@@ -387,12 +390,6 @@ def build_strategy_data_from_frames(
             forecasts_df=forecasts_df,
             metrics_df=metrics_df,
             panel_name=mrts_panel,
-        )
-        mrts_df = _filter_frame_by_date(
-            mrts_df,
-            date_col="date",
-            start_date=trade_start_date,
-            end_date=trade_end_date,
         )
 
     macro_df = None
@@ -410,11 +407,6 @@ def build_strategy_data_from_frames(
             strategy=strategy,
             cfg=cfg,
             refresh=refresh_market_data,
-        )
-        prices_df = _filter_prices_by_date(
-            prices_df,
-            start_date=trade_start_date,
-            end_date=trade_end_date,
         )
 
     return StrategyData(
@@ -474,9 +466,17 @@ def run_trading_pipeline_from_frames(
         data=data,
         output_dir=target_output_dir,
         test_mode=mode,
+        trade_start_date=trade_start_date,
+        trade_end_date=trade_end_date,
     )
 
     trades_df = _read_trades_artifact(
+        output_dir=target_output_dir,
+        strategy_name=strategy.name,
+        test_mode=mode,
+    )
+
+    path_results_df = _read_path_results_artifact(
         output_dir=target_output_dir,
         strategy_name=strategy.name,
         test_mode=mode,
@@ -496,6 +496,7 @@ def run_trading_pipeline_from_frames(
         "data": data,
         "signals_df": signals_df,
         "trades_df": trades_df,
+        "path_results_df": path_results_df,
         "equity_curve_df": equity_curve_df,
         "test_mode": mode,
         "trade_window_start": trade_start_date,

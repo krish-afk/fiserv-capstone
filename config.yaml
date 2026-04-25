@@ -284,7 +284,9 @@ trading:
   # Evaluation environment — shared across all strategies
   portfolio:
     initial_cash: 100000
-    commission: 0.002
+    commission: 0.002         # equity strategies: per-trade cost as fraction of turnover
+    contract_value: 100.0     # prediction market strategies: notional value per contract
+    bid_ask_spread: 0.02      # prediction market strategies: spread cost per contract
 
   monte_carlo:
     model: "gbm"
@@ -308,20 +310,22 @@ trading:
   strategies:
     krish:
       class: "KrishTradeStrategy"
+      # Maps role names the strategy expects → panel names from data.panels.
+      # Role names are strategy-defined; check the strategy class for required_inputs.
       forecast_panels:
-        primary: "pce_national_mom"
-        mrts: "mrts_national"
-      selected_model:                 # omit model_name/feature_set to auto-select by lowest RMSE
+        primary: "pce_national_mom"   # feeds strategy input "forecasts"
+        mrts: "mrts_national"         # feeds strategy input "mrts"
+      # Pins a specific model/feature_set for each panel; keys match forecast_panels values.
+      # Set both fields to null to auto-select by lowest RMSE from experiment results.
+      selected_model:
         pce_national_mom:
-          model_name: ""
-          feature_set: ""
+          model_name: null
+          feature_set: null
         mrts_national:
-          model_name: ""
-          feature_set: ""
+          model_name: null
+          feature_set: null
       forecastex:
         enabled: false
-        contract_value: 100.0
-        bid_ask_spread: 0.02
       params:
         ticker: "XLY"
         bullish_threshold: 0.75
@@ -334,16 +338,16 @@ trading:
 
     mrts_event:
       class: "MRTSForecastMarketStrategy"
+      # Role "primary" maps to the panel whose forecasts are compared against Bloomberg consensus.
       forecast_panels:
-        primary: "mrts_national"
+        primary: "mrts_national"      # feeds strategy input "forecasts"
+      # Set both fields to null to auto-select by lowest RMSE from experiment results.
       selected_model:
         mrts_national:
-          model_name: ""
-          feature_set: ""
+          model_name: null
+          feature_set: null
       forecastex:
         enabled: true
-        contract_value: 100.0
-        bid_ask_spread: 0.02
       params:
         bloomberg_csv_path: "data/raw/bbg_mrts.csv"
         model_rmse: 0.15

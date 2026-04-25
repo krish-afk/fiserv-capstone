@@ -715,12 +715,9 @@ class BacktestEngine:
         all_forecasts: pd.DataFrame,
         output_dir: Optional[Path] = None,
     ) -> dict:
-        try:
-            cfg_fx = get_active_strategy_config(config).get("forecastex", {})
-        except KeyError:
-            cfg_fx = {}
-        contract_value = float(cfg_fx.get("contract_value", 100.0))
-        bid_ask_spread = float(cfg_fx.get("bid_ask_spread", 0.02))
+        cfg_portfolio = config.get("trading", {}).get("portfolio", {})
+        contract_value = float(cfg_portfolio.get("contract_value", 100.0))
+        bid_ask_spread = float(cfg_portfolio.get("bid_ask_spread", 0.02))
 
         signals_df = strategy.generate_signals(data)
         trades_df = _run_forecastex_loop(

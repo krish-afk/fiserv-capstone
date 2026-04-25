@@ -1210,7 +1210,7 @@ export default function App() {
         <div className="hero-grid">
           <div>
             <p className="eyebrow">Forecasting + Trading Dashboard</p>
-            <h1>GT × Fiserv Macro Forecast Control Center</h1>
+            <h1>Macro Forecast Control Center</h1>
             <p className="hero-copy">
               Configure panels, models, feature sets, and trading strategy. Submit a run, watch progress,
               and review forecasting and trading outputs in charts and tables.

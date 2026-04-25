@@ -272,66 +272,83 @@ experiment:
           feature_sets: [fsbi_lags, fsbi_and_macro_lags]
 
 # ---------------------------------------------------------------------------
-# Trading stage — strategy selection, backtest parameters, market data,
-#                 FORECASTEX configuration, and sensitivity analysis.
+# Trading stage — strategy selection, evaluation parameters, and market data.
+# Set active_strategy to the key of the strategy to run. test_modes controls
+# which evaluation methods run; include both for a backtest/MC sanity check.
 # ---------------------------------------------------------------------------
 trading:
   enabled: true
-  test_mode: "monte_carlo"   # "backtest" or "monte_carlo"
+  active_strategy: "krish"
+  test_modes: ["monte_carlo"]         # "backtest" | "monte_carlo" | both
 
-  selected_model:
-    model_name: ""
-    feature_set: ""
-    panel_name: "pce_national_mom"
-
-  strategy:
-    file: "krish_trade_strategy.py"
-    class: "KrishTradeStrategy"
-    params:
-      bullish_threshold: 0.75
-      bearish_threshold: -0.75
-      pce_weight: 0.6
-      mrts_weight: 0.4
-      target_allocation: 0.25
-      risk_on_ticker: "XLY"
-      defensive_ticker: "XLP"
-
-  forecast_panels:
-    primary: "pce_national_mom"
-    mrts: "mrts_national"
-
+  # Evaluation environment — shared across all strategies
   portfolio:
     initial_cash: 100000
     commission: 0.002
-    ticker: "XLY"
-  
+
   monte_carlo:
     model: "gbm"
     n_paths: 500
     random_seed: 42
-    drift_mode: "historical"   # "historical", "zero", "risk_free"
+    drift_mode: "historical"          # "historical", "zero", "risk_free"
     lookback_days: 252
-    risk_free_column: null     # optional explicit column if already in macro data
+    risk_free_column: null            # optional explicit column if already in macro data
     save_path_details: true
-
-  forecastex:
-    enabled: false
-    contract_value: 100.0
-    bid_ask_spread: 0.02
-
-  market_data:
-    source: "yfinance"
-    tickers:
-      - "SPY"
-    start_date: "2019-01-01"
-    end_date: "2026-02-01"
-    refresh: false
 
   sensitivity_analysis:
     enabled: true
     noise_sigmas: [0.0, 0.1, 0.2, 0.5, 1.0, 2.0]
     n_trials: 50
     random_seed: 42
+
+  market_data:
+    source: "yfinance"                # only invoked when a strategy declares tickers
+    refresh: false
+
+  strategies:
+    krish:
+      class: "KrishTradeStrategy"
+      forecast_panels:
+        primary: "pce_national_mom"
+        mrts: "mrts_national"
+      selected_model:                 # omit model_name/feature_set to auto-select by lowest RMSE
+        pce_national_mom:
+          model_name: ""
+          feature_set: ""
+        mrts_national:
+          model_name: ""
+          feature_set: ""
+      forecastex:
+        enabled: false
+        contract_value: 100.0
+        bid_ask_spread: 0.02
+      params:
+        ticker: "XLY"
+        bullish_threshold: 0.75
+        bearish_threshold: -0.75
+        pce_weight: 0.6
+        mrts_weight: 0.4
+        target_allocation: 0.25
+        risk_on_ticker: "XLY"
+        defensive_ticker: "XLP"
+
+    mrts_event:
+      class: "MRTSForecastMarketStrategy"
+      forecast_panels:
+        primary: "mrts_national"
+      selected_model:
+        mrts_national:
+          model_name: ""
+          feature_set: ""
+      forecastex:
+        enabled: true
+        contract_value: 100.0
+        bid_ask_spread: 0.02
+      params:
+        bloomberg_csv_path: "data/raw/bbg_mrts.csv"
+        model_rmse: 0.15
+        edge_threshold: 0.15
+        contract_price: 0.50
   
 logging:
   level: "INFO"

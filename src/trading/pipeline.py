@@ -19,6 +19,7 @@ from src.trading.strategy import (
     DEFAULT_STRATEGY_DIR,
     BaseStrategy,
     StrategyData,
+    get_active_strategy_config,
     load_configured_strategy,
     load_latest_run_frames,
     select_best_model,
@@ -126,17 +127,18 @@ def _fetch_market_data_local(
 
 def resolve_strategy_tickers(strategy: BaseStrategy, cfg: Optional[dict] = None) -> list[str]:
     cfg = cfg or config
-    trading_cfg = cfg.get("trading", {})
-    market_cfg = trading_cfg.get("market_data", {})
-
-    configured = [str(t).upper() for t in market_cfg.get("tickers", [])]
     strategy_tickers = [str(t).upper() for t in getattr(strategy, "tickers", [])]
 
     fallback = []
-    if not strategy_tickers and trading_cfg.get("portfolio", {}).get("ticker"):
-        fallback = [str(trading_cfg["portfolio"]["ticker"]).upper()]
+    if not strategy_tickers:
+        try:
+            ticker = get_active_strategy_config(cfg).get("params", {}).get("ticker")
+            if ticker:
+                fallback = [str(ticker).upper()]
+        except KeyError:
+            pass
 
-    return _dedupe_keep_order([*configured, *strategy_tickers, *fallback])
+    return _dedupe_keep_order([*strategy_tickers, *fallback])
 
 
 def _market_data_covers(df: pd.DataFrame, tickers: list[str], start_date: str, end_date: str) -> bool:
@@ -162,15 +164,14 @@ def ensure_market_data_for_strategy(
     refresh: bool = False,
 ) -> pd.DataFrame:
     cfg = cfg or config
-    trading_cfg = cfg.get("trading", {})
-    market_cfg = trading_cfg.get("market_data", {})
+    market_cfg = cfg.get("trading", {}).get("market_data", {})
 
     tickers = resolve_strategy_tickers(strategy, cfg=cfg)
     if not tickers:
         return None
 
-    start_date = str(market_cfg.get("start_date", cfg["data"]["start_date"]))
-    end_date = str(market_cfg.get("end_date", cfg["data"]["end_date"]))
+    start_date = str(cfg["data"]["start_date"])
+    end_date = str(cfg["data"]["end_date"])
     source = str(market_cfg.get("source", "yfinance"))
 
     if not refresh:
@@ -194,7 +195,10 @@ def ensure_market_data_for_strategy(
 
 
 def _forecast_panel_name(cfg: dict, key: str, default: str) -> str:
-    return str(cfg.get("trading", {}).get("forecast_panels", {}).get(key, default))
+    try:
+        return str(get_active_strategy_config(cfg).get("forecast_panels", {}).get(key, default))
+    except KeyError:
+        return default
 
 
 def _load_macro_if_needed() -> pd.DataFrame:
@@ -281,7 +285,17 @@ def run_configured_trading_pipeline(
 
     engine = BacktestEngine()
     target_output_dir = Path(output_dir or (latest_run / "trading"))
-    results = engine.run_portfolio(strategy=strategy, data=data, output_dir=target_output_dir)
+
+    if not strategy.tickers:
+        all_forecasts = data.context.get("all_forecasts", data.forecasts)
+        results = engine.run_forecastex(
+            strategy=strategy,
+            data=data,
+            all_forecasts=all_forecasts,
+            output_dir=target_output_dir,
+        )
+    else:
+        results = engine.run_portfolio(strategy=strategy, data=data, output_dir=target_output_dir)
 
     return {
         "strategy_name": strategy.name,

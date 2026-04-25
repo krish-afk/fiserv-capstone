@@ -22,7 +22,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from src.trading.strategy import BaseStrategy, StrategyData
+from src.trading.strategy import BaseStrategy, StrategyData, get_active_strategy_config
 from src.utils.config import config
 
 _MC_MODE_ALIASES = {
@@ -43,9 +43,11 @@ def _coerce_test_mode(value: object) -> str:
     return _MC_MODE_ALIASES.get(mode, "backtest")
 
 
-def _test_mode_from_config() -> str:
-    trading_cfg = config.get("trading", {})
-    return _coerce_test_mode(trading_cfg.get("test_mode", "backtest"))
+def _test_modes_from_config() -> list[str]:
+    modes = config.get("trading", {}).get("test_modes", ["backtest"])
+    if isinstance(modes, str):
+        modes = [modes]
+    return [_coerce_test_mode(m) for m in modes]
 
 
 def _monte_carlo_config() -> dict:
@@ -639,18 +641,17 @@ class BacktestEngine:
         self,
         initial_cash: float = None,
         commission: float = None,
-        ticker: str = None,
     ):
         cfg = config.get("trading", {}).get("portfolio", {})
         self.initial_cash = float(initial_cash or cfg.get("initial_cash", 100_000))
         self.commission = float(commission or cfg.get("commission", 0.002))
-        self.ticker = (ticker or cfg.get("ticker", "XLY")).upper()
 
     def run_portfolio(
         self,
         strategy: BaseStrategy,
         data: StrategyData,
         output_dir: Optional[Path] = None,
+        test_modes: Optional[list] = None,
     ) -> dict:
         if data.prices is None:
             raise ValueError(
@@ -658,50 +659,54 @@ class BacktestEngine:
                 "Load market data before running the trading pipeline."
             )
 
-        test_mode = _test_mode_from_config()
-        default_ticker = strategy.default_ticker or self.ticker
+        modes = test_modes if test_modes is not None else _test_modes_from_config()
+        default_ticker = strategy.default_ticker or ""
+        combined: dict[str, dict] = {}
 
-        if test_mode == "monte_carlo":
-            mc_cfg = _monte_carlo_config()
-            signals_df, trades_df, path_results_df, results = _run_weight_monte_carlo(
-                strategy=strategy,
-                data=data,
-                initial_cash=self.initial_cash,
-                transaction_cost=self.commission,
-                default_ticker=default_ticker,
-                mc_cfg=mc_cfg,
-            )
-            positions_df = _coerce_position_frame(signals_df, default_ticker=default_ticker)
-        else:
-            signals_df = strategy.generate_signals(data)
-            positions_df = _coerce_position_frame(signals_df, default_ticker=default_ticker)
-            trades_df, results, equity_curve = _run_weight_backtest(
-                positions_df=positions_df,
-                prices=data.prices,
-                initial_cash=self.initial_cash,
-                transaction_cost=self.commission,
-            )
-            path_results_df = pd.DataFrame()
-            results["mode"] = "backtest"
-            results["equity_curve"] = {
-                ts.isoformat(): float(val) for ts, val in equity_curve.items()
-            }
+        for mode in modes:
+            if mode == "monte_carlo":
+                mc_cfg = _monte_carlo_config()
+                signals_df, trades_df, path_results_df, results = _run_weight_monte_carlo(
+                    strategy=strategy,
+                    data=data,
+                    initial_cash=self.initial_cash,
+                    transaction_cost=self.commission,
+                    default_ticker=default_ticker,
+                    mc_cfg=mc_cfg,
+                )
+                positions_df = _coerce_position_frame(signals_df, default_ticker=default_ticker)
+                results["mode"] = "monte_carlo"
+            else:
+                signals_df = strategy.generate_signals(data)
+                positions_df = _coerce_position_frame(signals_df, default_ticker=default_ticker)
+                trades_df, results, equity_curve = _run_weight_backtest(
+                    positions_df=positions_df,
+                    prices=data.prices,
+                    initial_cash=self.initial_cash,
+                    transaction_cost=self.commission,
+                )
+                path_results_df = pd.DataFrame()
+                results["mode"] = "backtest"
+                results["equity_curve"] = {
+                    ts.isoformat(): float(val) for ts, val in equity_curve.items()
+                }
 
-        results["strategy"] = strategy.name
-        results["initial_cash"] = self.initial_cash
-        results["ticker"] = self.ticker
+            results["strategy"] = strategy.name
+            results["initial_cash"] = self.initial_cash
+            results["ticker"] = default_ticker
+            combined[mode] = results
 
-        if output_dir is not None:
-            self._write_portfolio_results(
-                results=results,
-                raw_signals_df=signals_df,
-                positions_df=positions_df,
-                trades_df=trades_df,
-                path_results_df=path_results_df,
-                output_dir=Path(output_dir),
-            )
+            if output_dir is not None:
+                self._write_portfolio_results(
+                    results=results,
+                    raw_signals_df=signals_df,
+                    positions_df=positions_df,
+                    trades_df=trades_df,
+                    path_results_df=path_results_df,
+                    output_dir=Path(output_dir),
+                )
 
-        return results
+        return combined
 
     def run_forecastex(
         self,
@@ -710,7 +715,10 @@ class BacktestEngine:
         all_forecasts: pd.DataFrame,
         output_dir: Optional[Path] = None,
     ) -> dict:
-        cfg_fx = config.get("trading", {}).get("forecastex", {})
+        try:
+            cfg_fx = get_active_strategy_config(config).get("forecastex", {})
+        except KeyError:
+            cfg_fx = {}
         contract_value = float(cfg_fx.get("contract_value", 100.0))
         bid_ask_spread = float(cfg_fx.get("bid_ask_spread", 0.02))
 
@@ -753,8 +761,8 @@ class BacktestEngine:
         name = results["strategy"]
         mode = str(results.get("mode", "backtest")).lower()
 
-        raw_signals_df.reset_index().to_csv(output_dir / f"signals_{name}.csv", index=False)
-        positions_df.reset_index().to_csv(output_dir / f"positions_{name}.csv", index=False)
+        raw_signals_df.reset_index().to_csv(output_dir / f"signals_{mode}_{name}.csv", index=False)
+        positions_df.reset_index().to_csv(output_dir / f"positions_{mode}_{name}.csv", index=False)
 
         if mode == "monte_carlo":
             trades_df.to_csv(output_dir / f"monte_carlo_trades_{name}.csv", index=False)

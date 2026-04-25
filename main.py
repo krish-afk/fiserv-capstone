@@ -102,44 +102,42 @@ def _fmt(value, digits: int = 2) -> str:
 
 
 def _print_trading_summary(results: dict) -> None:
-    mode = str(results.get("mode", "backtest")).lower()
-
-    if mode == "monte_carlo":
-        print(
-            "[INFO] Monte Carlo summary | "
-            f"n_paths={results.get('n_paths')} | "
-            f"model={results.get('simulation_model')} | "
-            f"window={results.get('simulation_start')}->{results.get('simulation_end')}"
-        )
-        print(
-            "[INFO] Monte Carlo returns | "
-            f"mean={_fmt(_safe_metric(results, 'return_pct', 'mean'))}% | "
-            f"median={_fmt(_safe_metric(results, 'return_pct', 'median'))}% | "
-            f"p05={_fmt(_safe_metric(results, 'return_pct', 'p05'))}% | "
-            f"p95={_fmt(_safe_metric(results, 'return_pct', 'p95'))}%"
-        )
-        print(
-            "[INFO] Monte Carlo risk | "
-            f"sharpe_mean={_fmt(_safe_metric(results, 'sharpe_ratio', 'mean'))} | "
-            f"sharpe_median={_fmt(_safe_metric(results, 'sharpe_ratio', 'median'))} | "
-            f"max_dd_mean={_fmt(_safe_metric(results, 'max_drawdown_pct', 'mean'))}% | "
-            f"max_dd_median={_fmt(_safe_metric(results, 'max_drawdown_pct', 'median'))}%"
-        )
-        print(
-            "[INFO] Monte Carlo portfolio | "
-            f"final_value_mean={_fmt(_safe_metric(results, 'final_value', 'mean'))} | "
-            f"final_value_median={_fmt(_safe_metric(results, 'final_value', 'median'))} | "
-            f"win_rate_mean={_fmt(_safe_metric(results, 'win_rate', 'mean'))}"
-        )
-        return
-
-    print(
-        "[INFO] Backtest summary | "
-        f"return_pct={_fmt(results.get('return_pct'))} | "
-        f"sharpe_ratio={_fmt(results.get('sharpe_ratio'))} | "
-        f"max_drawdown_pct={_fmt(results.get('max_drawdown_pct'))} | "
-        f"final_value={_fmt(results.get('final_value'))}"
-    )
+    for mode, r in results.items():
+        if mode == "monte_carlo":
+            print(
+                "[INFO] Monte Carlo summary | "
+                f"n_paths={r.get('n_paths')} | "
+                f"model={r.get('simulation_model')} | "
+                f"window={r.get('simulation_start')}->{r.get('simulation_end')}"
+            )
+            print(
+                "[INFO] Monte Carlo returns | "
+                f"mean={_fmt(_safe_metric(r, 'return_pct', 'mean'))}% | "
+                f"median={_fmt(_safe_metric(r, 'return_pct', 'median'))}% | "
+                f"p05={_fmt(_safe_metric(r, 'return_pct', 'p05'))}% | "
+                f"p95={_fmt(_safe_metric(r, 'return_pct', 'p95'))}%"
+            )
+            print(
+                "[INFO] Monte Carlo risk | "
+                f"sharpe_mean={_fmt(_safe_metric(r, 'sharpe_ratio', 'mean'))} | "
+                f"sharpe_median={_fmt(_safe_metric(r, 'sharpe_ratio', 'median'))} | "
+                f"max_dd_mean={_fmt(_safe_metric(r, 'max_drawdown_pct', 'mean'))}% | "
+                f"max_dd_median={_fmt(_safe_metric(r, 'max_drawdown_pct', 'median'))}%"
+            )
+            print(
+                "[INFO] Monte Carlo portfolio | "
+                f"final_value_mean={_fmt(_safe_metric(r, 'final_value', 'mean'))} | "
+                f"final_value_median={_fmt(_safe_metric(r, 'final_value', 'median'))} | "
+                f"win_rate_mean={_fmt(_safe_metric(r, 'win_rate', 'mean'))}"
+            )
+        else:
+            print(
+                "[INFO] Backtest summary | "
+                f"return_pct={_fmt(r.get('return_pct'))} | "
+                f"sharpe_ratio={_fmt(r.get('sharpe_ratio'))} | "
+                f"max_drawdown_pct={_fmt(r.get('max_drawdown_pct'))} | "
+                f"final_value={_fmt(r.get('final_value'))}"
+            )
 
 
 def run_trading_stage(refresh_market_data: bool = False):
@@ -148,38 +146,22 @@ def run_trading_stage(refresh_market_data: bool = False):
     experiment outputs already written to disk.
     """
     print("\n[STAGE 3] Trading strategy & backtest")
-    
-    # 1. Peek at the config to see what kind of strategy we are running
-    from src.trading.strategy import load_configured_strategy
-    strategy = load_configured_strategy(cfg=config)
 
-    # 2. THE ROUTER: Event Contracts vs. Standard Equities
-    if strategy.name == "mrts_forecast_market":
-        print("[INFO] Event Contract Strategy detected. Routing to Prediction Market Simulator...")
-        
-        # Import and run your custom backtester
-        from src.trading.run_event_backtest import run_event_pipeline
-        run_event_pipeline()
-        
-    else:
-        print("[INFO] Equity Strategy detected. Routing to Standard Portfolio Simulator...")
-        
-        # Run Krish/Will's standard pipeline
-        trading_result = run_configured_trading_pipeline(
-            cfg=config,
-            refresh_market_data=refresh_market_data,
-        )
+    trading_result = run_configured_trading_pipeline(
+        cfg=config,
+        refresh_market_data=refresh_market_data,
+    )
 
-        print(
-            "[INFO] Trading complete | "
-            f"strategy={trading_result['strategy_name']} | "
-            f"tickers={trading_result['tickers']} | "
-            f"output_dir={trading_result['output_dir']}"
-        )
+    print(
+        "[INFO] Trading complete | "
+        f"strategy={trading_result['strategy_name']} | "
+        f"tickers={trading_result['tickers']} | "
+        f"output_dir={trading_result['output_dir']}"
+    )
 
-        results = trading_result.get("results", {})
-        if results:
-             _print_trading_summary(results)
+    results = trading_result.get("results", {})
+    if results:
+        _print_trading_summary(results)
 
 
 def main():

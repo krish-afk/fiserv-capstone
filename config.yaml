@@ -278,7 +278,7 @@ experiment:
 # ---------------------------------------------------------------------------
 trading:
   enabled: true
-  active_strategy: "anjalika_adaptive_regime"   # Key of strategy to run from strategies dict below
+  active_strategy: "pce_pairs"   # Key of strategy to run from strategies dict below
   test_modes: ["backtest"]         # "backtest" | "monte_carlo" | both
 
   # Evaluation environment — shared across all strategies
@@ -392,5 +392,28 @@ trading:
         duration_basket: [TLT, IEF, LQD, QQQ, XLK]
         uncertain_basket: [SHY, BIL, IEF, GLD]
   
+    pce_pairs:
+      class: "PCEPairsStrategy"
+      forecast_panels:
+        primary: "pce_national_mom"
+      selected_model:
+        pce_national_mom:
+          model_name: null
+          feature_set: null
+      forecastex:
+        enabled: false
+      params:
+        # asset pair
+        ticker_a: "WMT"   # consumer discretionary WMT | XLY
+        ticker_b: "TGT"   # consumer staples TGT | XLP 
+        # macro signal
+        macro_threshold: 0.0    # pce must exceed abs(magnitude) to register a regime; higher requires stronger signal
+        # spread and z-score
+        zscore_window: 20   # trading days rolling window for z-score computation
+        entry_z: 1.5  # |z| threshold to open a position
+        exit_z: 0.8   # |z| threshold to close a position (mean reversion)
+        # dollar-neutral position sizing
+        position_size: 0.5   # long leg weight; short leg gets -position_size
+
 logging:
   level: "INFO"

@@ -278,8 +278,8 @@ experiment:
 # ---------------------------------------------------------------------------
 trading:
   enabled: true
-  active_strategy: "mrts_event"
-  test_modes: ["monte_carlo"]         # "backtest" | "monte_carlo" | both
+  active_strategy: "anjalika_adaptive_regime"   # Key of strategy to run from strategies dict below
+  test_modes: ["backtest"]         # "backtest" | "monte_carlo" | both
 
   # Evaluation environment — shared across all strategies
   portfolio:
@@ -353,6 +353,44 @@ trading:
         model_rmse: 0.15
         edge_threshold: 0.15
         contract_price: 0.50
+
+    anjalika_adaptive_regime:
+      class: AdaptiveRegimeStrategy
+      forecast_panels:
+        primary: "pce_national_mom" 
+      selected_model:
+        pce_national_mom:
+          model_name: null
+          feature_set: null
+        mrts_national:
+          model_name: null
+          feature_set: null
+      forecastex:
+        enabled: false
+      params:
+        trend_window: 6
+        z_window: 12
+        uncertainty_window: 6
+        risk_on_gap_z: 0.4
+        risk_on_delta_z: 0.2
+        defensive_gap_z: 0.2
+        duration_gap_z: -0.1
+        falling_delta_z: -0.6
+        uncertainty_ratio_thresh: 1.35
+        ambiguous_band: 0.2
+        top_k: 1
+        min_abs_mom: 0.0
+        use_ma_filter: false
+        target_allocation: 1.0
+        score_w_3m: 0.55
+        score_w_6m: 0.30
+        score_w_12m: 0.15
+        score_w_vol: 0.25
+        fallback_etf: SHY
+        risk_on_basket: [QQQ, SPY, IWM, SMH, XLY, XLI, HYG]
+        defensive_basket: [XLV, XLP, XLU, USMV, QUAL, GLD]
+        duration_basket: [TLT, IEF, LQD, QQQ, XLK]
+        uncertain_basket: [SHY, BIL, IEF, GLD]
   
 logging:
   level: "INFO"

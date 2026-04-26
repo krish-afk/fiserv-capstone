@@ -62,14 +62,89 @@ class PCEPairsStrategy(BaseStrategy):
         return [self.ticker_a, self.ticker_b]
 
     # ------------------------------------------------------------------
-    # Helpers
+    # Private helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _ols_slope(x: np.ndarray, y: np.ndarray) -> float:
-        """OLS slope from regressing y on x (with intercept, Engle-Granger style)."""
-        # np.polyfit returns [slope, intercept]; we only need the slope.
-        return float(np.polyfit(x, y, 1)[0])
+    def _get_log_prices(self, prices: pd.DataFrame) -> pd.DataFrame:
+        """Fetch close prices for both tickers, align, and return log-transformed."""
+        price_a = self.get_price_series(prices, self.ticker_a)
+        price_b = self.get_price_series(prices, self.ticker_b)
+        raw = pd.DataFrame({"a": price_a, "b": price_b}).dropna()
+        return np.log(raw)
+
+    def _build_spread(self, log_prices: pd.DataFrame) -> pd.Series:
+        """Compute the Engle-Granger spread, estimating the hedge ratio once."""
+        if self._hedge_ratio is None:
+            # OLS: regress log_a on log_b with intercept; slope is the hedge ratio.
+            self._hedge_ratio = float(
+                np.polyfit(log_prices["b"].values, log_prices["a"].values, 1)[0]
+            )
+        return log_prices["a"] - self._hedge_ratio * log_prices["b"]
+
+    def _rolling_zscore(self, spread: pd.Series) -> pd.Series:
+        """Rolling z-score using only past data within the configured window."""
+        roll = spread.rolling(self.zscore_window, min_periods=self.zscore_window)
+        std = roll.std()
+        return (spread - roll.mean()) / std.where(std > 0)
+
+    def _align_macro(self, forecasts: pd.DataFrame, daily_index: pd.DatetimeIndex) -> pd.Series:
+        """Forward-fill monthly PCE forecasts onto a daily index.
+
+        The union+ffill pattern propagates values across month boundaries.
+        Days before the first forecast observation remain NaN and are dropped
+        when the caller does the inner join.
+        """
+        monthly = self._coerce_forecast_index(forecasts)[["y_pred"]]
+        return (
+            monthly
+            .reindex(daily_index.union(monthly.index))
+            .sort_index()
+            .ffill()
+            .reindex(daily_index)
+            ["y_pred"]
+        )
+
+    def _classify_regime(self, y_pred: np.ndarray) -> np.ndarray:
+        """Map forecast values to 'bullish' / 'bearish' / 'neutral' regime labels."""
+        return np.where(
+            y_pred > self.macro_threshold, "bullish",
+            np.where(y_pred < -self.macro_threshold, "bearish", "neutral"),
+        )
+
+    def _run_state_machine(
+        self, zs: np.ndarray, macro_regime: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Entry/exit loop; returns (weight_a, weight_b, active) arrays."""
+        n = len(zs)
+        weight_a = np.zeros(n, dtype=float)
+        weight_b = np.zeros(n, dtype=float)
+        active = np.zeros(n, dtype=bool)
+
+        position = 0        # 0 = flat, 1 = long spread, -1 = short spread
+        entry_regime = None
+
+        for i in range(n):
+            z, regime = zs[i], macro_regime[i]
+
+            # Exit: mean reversion or macro regime flip since entry.
+            if position != 0:
+                if abs(z) < self.exit_z or regime != entry_regime:
+                    position = 0
+                    entry_regime = None
+
+            # Entry: only from flat.
+            if position == 0:
+                if z < -self.entry_z and regime == "bullish":
+                    position, entry_regime = 1, regime   # long A / short B
+                elif z > self.entry_z and regime == "bearish":
+                    position, entry_regime = -1, regime  # short A / long B
+
+            if position == 1:
+                weight_a[i], weight_b[i], active[i] = self.position_size, -self.position_size, True
+            elif position == -1:
+                weight_a[i], weight_b[i], active[i] = -self.position_size, self.position_size, True
+
+        return weight_a, weight_b, active
 
     # ------------------------------------------------------------------
     # Signal generation
@@ -78,49 +153,14 @@ class PCEPairsStrategy(BaseStrategy):
     def generate_signals(self, data: StrategyData) -> pd.DataFrame:
         data.validate(self.required_inputs)
 
-        # --- 1. Price series ---
-        price_a = self.get_price_series(data.prices, self.ticker_a)
-        price_b = self.get_price_series(data.prices, self.ticker_b)
+        log_prices = self._get_log_prices(data.prices)
+        spread = self._build_spread(log_prices)
+        z_score = self._rolling_zscore(spread)
+        daily_macro = self._align_macro(data.forecasts, log_prices.index)
 
-        # Align and drop any missing price observations.
-        prices = pd.DataFrame({"a": price_a, "b": price_b}).dropna()
-        log_a = np.log(prices["a"])
-        log_b = np.log(prices["b"])
-
-        # --- 2. Hedge ratio (estimated once; fixed for the entire backtest) ---
-        if self._hedge_ratio is None:
-            self._hedge_ratio = self._ols_slope(log_b.values, log_a.values)
-        hedge_ratio = self._hedge_ratio
-
-        # --- 3. Spread: Engle-Granger residual ---
-        spread = log_a - hedge_ratio * log_b
-
-        # --- 4. Rolling z-score (uses only past data within the window) ---
-        roll_mean = spread.rolling(self.zscore_window, min_periods=self.zscore_window).mean()
-        roll_std = spread.rolling(self.zscore_window, min_periods=self.zscore_window).std()
-        z_score = (spread - roll_mean) / roll_std.where(roll_std > 0)
-
-        # --- 5. Forward-fill monthly forecasts to daily frequency ---
-        # Monthly y_pred is forward-filled to cover each trading day.
-        # Days before the first forecast observation become NaN and are dropped below.
-        # The union+ffill pattern ensures ffill propagates across month boundaries.
-        forecasts = self._coerce_forecast_index(data.forecasts)[["y_pred"]]
-        daily_macro = (
-            forecasts
-            .reindex(prices.index.union(forecasts.index))
-            .sort_index()
-            .ffill()
-            .reindex(prices.index)
-        )
-
-        # --- 6. Inner join: only dates where spread, z-score, and forecast all exist ---
-        # (z-score NaN for the first zscore_window days; forecast NaN before first obs)
+        # Inner join: drop rows where z-score or forecast is unavailable.
         work = pd.DataFrame(
-            {
-                "spread": spread,
-                "z_score": z_score,
-                "y_pred": daily_macro["y_pred"],
-            }
+            {"spread": spread, "z_score": z_score, "y_pred": daily_macro}
         ).dropna()
 
         if work.empty:
@@ -129,63 +169,20 @@ class PCEPairsStrategy(BaseStrategy):
                 weights={self.ticker_a: [], self.ticker_b: []},
             )
 
-        # --- 7. Macro regime (binary threshold) ---
-        preds = work["y_pred"].values
-        macro_regime = np.where(
-            preds > self.macro_threshold,
-            "bullish",
-            np.where(preds < -self.macro_threshold, "bearish", "neutral"),
+        macro_regime = self._classify_regime(work["y_pred"].values)
+        weight_a, weight_b, active = self._run_state_machine(
+            work["z_score"].values, macro_regime
         )
 
-        # --- 8. State machine: entry / exit ---
-        n = len(work)
-        weight_a = np.zeros(n, dtype=float)
-        weight_b = np.zeros(n, dtype=float)
-        active = np.zeros(n, dtype=bool)
-
-        position = 0        # 0 = flat, 1 = long spread, -1 = short spread
-        entry_regime = None
-        zs = work["z_score"].values
-
-        for i in range(n):
-            z = zs[i]
-            regime = macro_regime[i]
-
-            # Exit: mean reversion or macro flip
-            if position != 0:
-                if abs(z) < self.exit_z or regime != entry_regime:
-                    position = 0
-                    entry_regime = None
-
-            # Entry: only enter from flat
-            if position == 0:
-                if z < -self.entry_z and regime == "bullish":
-                    position = 1          # long A / short B
-                    entry_regime = regime
-                elif z > self.entry_z and regime == "bearish":
-                    position = -1         # short A / long B
-                    entry_regime = regime
-
-            if position == 1:
-                weight_a[i] = self.position_size
-                weight_b[i] = -self.position_size
-                active[i] = True
-            elif position == -1:
-                weight_a[i] = -self.position_size
-                weight_b[i] = self.position_size
-                active[i] = True
-
-        # --- 9. Metadata ---
-        spreads = work["spread"].values
         metadata = [
             {
-                "z_score": round(float(zs[i]), 6),
-                "spread_value": round(float(spreads[i]), 6),
+                "z_score": round(float(work["z_score"].iat[i]), 6),
+                "spread_value": round(float(work["spread"].iat[i]), 6),
                 "macro_regime": str(macro_regime[i]),
-                "hedge_ratio": round(hedge_ratio, 6),
+                "hedge_ratio": round(self._hedge_ratio, 6),
                 "active": bool(active[i]),
             }
-            for i in range(n)
+            for i in range(len(work))
         ]
 
         return self._make_weight_frame(

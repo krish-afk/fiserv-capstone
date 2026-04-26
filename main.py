@@ -89,54 +89,196 @@ def run_experiment_stage(
 
 
 def _safe_metric(results: dict, metric: str, stat: str):
-    return results.get("metrics", {}).get(metric, {}).get(stat)
+    if not isinstance(results, dict):
+        return None
+
+    metrics = results.get("metrics", {})
+    if not isinstance(metrics, dict):
+        return None
+
+    metric_values = metrics.get(metric, {})
+    if not isinstance(metric_values, dict):
+        return None
+
+    return metric_values.get(stat)
 
 
 def _fmt(value, digits: int = 2) -> str:
     if value is None:
         return "NA"
+
+    try:
+        if pd.isna(value):
+            return "NA"
+    except Exception:
+        pass
+
     try:
         return f"{float(value):.{digits}f}"
     except Exception:
         return str(value)
 
 
+def _fmt_pct(value, digits: int = 2) -> str:
+    formatted = _fmt(value, digits=digits)
+    return "NA" if formatted == "NA" else f"{formatted}%"
+
+
+def _fmt_rate(value, digits: int = 2) -> str:
+    if value is None:
+        return "NA"
+
+    try:
+        if pd.isna(value):
+            return "NA"
+    except Exception:
+        pass
+
+    try:
+        value = float(value)
+
+        # win_rate is usually stored as 0.56, not 56.0.
+        if abs(value) <= 1.0:
+            value *= 100.0
+
+        return f"{value:.{digits}f}%"
+    except Exception:
+        return str(value)
+
+
+def _looks_like_single_result(results: dict) -> bool:
+    if not isinstance(results, dict):
+        return False
+
+    nested_keys = {"backtest", "monte_carlo"}
+    if any(k in results for k in nested_keys):
+        return False
+
+    return any(
+        k in results
+        for k in [
+            "return_pct",
+            "annualized_return_pct",
+            "sharpe_ratio",
+            "max_drawdown_pct",
+            "final_value",
+            "total_pnl",
+            "final_cum_pnl",
+        ]
+    )
+
+
+def _print_backtest_summary(r: dict) -> None:
+    print(
+        "[INFO] Backtest summary | "
+        f"strategy={r.get('strategy', 'NA')} | "
+        f"market_type={r.get('market_type', r.get('monthly_mode', 'NA'))} | "
+        f"return_pct={_fmt_pct(r.get('return_pct'))} | "
+        f"annualized_return_pct={_fmt_pct(r.get('annualized_return_pct'))} | "
+        f"sharpe_ratio={_fmt(r.get('sharpe_ratio'))} | "
+        f"max_drawdown_pct={_fmt_pct(r.get('max_drawdown_pct'))} | "
+        f"win_rate={_fmt_rate(r.get('win_rate'))} | "
+        f"num_trades={r.get('num_trades', 'NA')} | "
+        f"final_value={_fmt(r.get('final_value'))} | "
+        f"absolute_return={_fmt(r.get('absolute_return', r.get('total_pnl')))}"
+    )
+
+
+def _print_monte_carlo_summary(r: dict) -> None:
+    initial_cash = r.get("initial_cash")
+
+    final_value_mean = _safe_metric(r, "final_value", "mean")
+    final_value_median = _safe_metric(r, "final_value", "median")
+    final_value_p05 = _safe_metric(r, "final_value", "p05")
+    final_value_p95 = _safe_metric(r, "final_value", "p95")
+    final_value_min = _safe_metric(r, "final_value", "min")
+    final_value_max = _safe_metric(r, "final_value", "max")
+
+    absolute_return_mean = _safe_metric(r, "absolute_return", "mean")
+    absolute_return_median = _safe_metric(r, "absolute_return", "median")
+    absolute_return_p05 = _safe_metric(r, "absolute_return", "p05")
+    absolute_return_p95 = _safe_metric(r, "absolute_return", "p95")
+
+    print(
+        "[INFO] Monte Carlo summary | "
+        f"n_paths={r.get('n_paths')} | "
+        f"model={r.get('simulation_model')} | "
+        f"window={r.get('simulation_start')}->{r.get('simulation_end')} | "
+        f"initial_cash={_fmt(initial_cash)}"
+    )
+
+    print(
+        "[INFO] Monte Carlo returns | "
+        f"mean={_fmt_pct(_safe_metric(r, 'return_pct', 'mean'))} | "
+        f"median={_fmt_pct(_safe_metric(r, 'return_pct', 'median'))} | "
+        f"p05={_fmt_pct(_safe_metric(r, 'return_pct', 'p05'))} | "
+        f"p95={_fmt_pct(_safe_metric(r, 'return_pct', 'p95'))}"
+    )
+
+    print(
+        "[INFO] Monte Carlo risk | "
+        f"sharpe_mean={_fmt(_safe_metric(r, 'sharpe_ratio', 'mean'))} | "
+        f"sharpe_median={_fmt(_safe_metric(r, 'sharpe_ratio', 'median'))} | "
+        f"max_dd_mean={_fmt_pct(_safe_metric(r, 'max_drawdown_pct', 'mean'))} | "
+        f"max_dd_median={_fmt_pct(_safe_metric(r, 'max_drawdown_pct', 'median'))}"
+    )
+
+    print(
+        "[INFO] Monte Carlo final portfolio value | "
+        f"mean={_fmt(final_value_mean)} | "
+        f"median={_fmt(final_value_median)} | "
+        f"p05={_fmt(final_value_p05)} | "
+        f"p95={_fmt(final_value_p95)} | "
+        f"min={_fmt(final_value_min)} | "
+        f"max={_fmt(final_value_max)}"
+    )
+
+    print(
+        "[INFO] Monte Carlo expected profit | "
+        f"mean={_fmt(absolute_return_mean)} | "
+        f"median={_fmt(absolute_return_median)} | "
+        f"p05={_fmt(absolute_return_p05)} | "
+        f"p95={_fmt(absolute_return_p95)}"
+    )
+
+    print(
+        "[INFO] Monte Carlo trading stats | "
+        f"win_rate_mean={_fmt(_safe_metric(r, 'win_rate', 'mean'))} | "
+        f"win_rate_median={_fmt(_safe_metric(r, 'win_rate', 'median'))}"
+    )
+
+
 def _print_trading_summary(results: dict) -> None:
+    if not isinstance(results, dict) or not results:
+        print("[INFO] Trading summary | no results")
+        return
+
+    # Backwards compatibility: if a strategy returns a single flat result dict,
+    # wrap it as one backtest result.
+    if _looks_like_single_result(results):
+        results = {str(results.get("mode", "backtest")): results}
+
     for mode, r in results.items():
-        if mode == "monte_carlo":
-            print(
-                "[INFO] Monte Carlo summary | "
-                f"n_paths={r.get('n_paths')} | "
-                f"model={r.get('simulation_model')} | "
-                f"window={r.get('simulation_start')}->{r.get('simulation_end')}"
-            )
-            print(
-                "[INFO] Monte Carlo returns | "
-                f"mean={_fmt(_safe_metric(r, 'return_pct', 'mean'))}% | "
-                f"median={_fmt(_safe_metric(r, 'return_pct', 'median'))}% | "
-                f"p05={_fmt(_safe_metric(r, 'return_pct', 'p05'))}% | "
-                f"p95={_fmt(_safe_metric(r, 'return_pct', 'p95'))}%"
-            )
-            print(
-                "[INFO] Monte Carlo risk | "
-                f"sharpe_mean={_fmt(_safe_metric(r, 'sharpe_ratio', 'mean'))} | "
-                f"sharpe_median={_fmt(_safe_metric(r, 'sharpe_ratio', 'median'))} | "
-                f"max_dd_mean={_fmt(_safe_metric(r, 'max_drawdown_pct', 'mean'))}% | "
-                f"max_dd_median={_fmt(_safe_metric(r, 'max_drawdown_pct', 'median'))}%"
-            )
-            print(
-                "[INFO] Monte Carlo portfolio | "
-                f"final_value_mean={_fmt(_safe_metric(r, 'final_value', 'mean'))} | "
-                f"final_value_median={_fmt(_safe_metric(r, 'final_value', 'median'))} | "
-                f"win_rate_mean={_fmt(_safe_metric(r, 'win_rate', 'mean'))}"
-            )
+        if not isinstance(r, dict):
+            print(f"[INFO] Trading result | {mode}={r}")
+            continue
+
+        result_mode = str(r.get("mode", mode)).strip().lower()
+
+        if result_mode == "monte_carlo":
+            _print_monte_carlo_summary(r)
+
+        elif result_mode == "backtest":
+            _print_backtest_summary(r)
+
         else:
             print(
-                "[INFO] Backtest summary | "
-                f"return_pct={_fmt(r.get('return_pct'))} | "
-                f"sharpe_ratio={_fmt(r.get('sharpe_ratio'))} | "
-                f"max_drawdown_pct={_fmt(r.get('max_drawdown_pct'))} | "
-                f"final_value={_fmt(r.get('final_value'))}"
+                "[INFO] Trading summary | "
+                f"mode={result_mode} | "
+                f"strategy={r.get('strategy', 'NA')} | "
+                f"return_pct={_fmt_pct(r.get('return_pct'))} | "
+                f"final_value={_fmt(r.get('final_value'))} | "
+                f"num_trades={r.get('num_trades', 'NA')}"
             )
 
 

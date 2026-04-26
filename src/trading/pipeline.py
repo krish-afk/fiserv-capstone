@@ -285,8 +285,9 @@ def run_configured_trading_pipeline(
 
     engine = BacktestEngine()
     target_output_dir = Path(output_dir or (latest_run / "trading"))
+    resolved_tickers = resolve_strategy_tickers(strategy, cfg=cfg)
 
-    if not strategy.tickers:
+    if not resolved_tickers:
         all_forecasts = data.context.get("all_forecasts", data.forecasts)
         results = engine.run_forecastex(
             strategy=strategy,
@@ -295,11 +296,15 @@ def run_configured_trading_pipeline(
             output_dir=target_output_dir,
         )
     else:
-        results = engine.run_portfolio(strategy=strategy, data=data, output_dir=target_output_dir)
+        results = engine.run_portfolio(
+            strategy=strategy,
+            data=data,
+            output_dir=target_output_dir,
+        )
 
     return {
         "strategy_name": strategy.name,
-        "tickers": resolve_strategy_tickers(strategy, cfg=cfg),
+        "tickers": resolved_tickers,
         "output_dir": str(target_output_dir),
         "results": results,
         "data": data,

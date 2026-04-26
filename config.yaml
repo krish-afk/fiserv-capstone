@@ -278,7 +278,7 @@ experiment:
 # ---------------------------------------------------------------------------
 trading:
   enabled: true
-  active_strategy: "krish"
+  active_strategy: "mrts_event"
   test_modes: ["monte_carlo"]         # "backtest" | "monte_carlo" | both
 
   # Evaluation environment — shared across all strategies

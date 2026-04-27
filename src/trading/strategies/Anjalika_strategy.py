@@ -26,6 +26,37 @@ class AdaptiveRegimeStrategy(BaseStrategy):
     run inside the team's trading pipeline.
     """
 
+    DISPLAY_NAME = "Adaptive Regime ETF Rotation"
+    DESCRIPTION = "Uses forecast regimes plus ETF momentum ranking to rotate across risk-on, defensive, duration, and uncertain baskets."
+    REQUIRED_INPUTS_SCHEMA = ["forecasts", "prices"]
+
+    PARAMETER_SCHEMA = [
+        {"name": "trend_window", "label": "Trend Window", "type": "number", "default": 6, "required": True, "step": 1},
+        {"name": "z_window", "label": "Z-Score Window", "type": "number", "default": 12, "required": True, "step": 1},
+        {"name": "uncertainty_window", "label": "Uncertainty Window", "type": "number", "default": 6, "required": True, "step": 1},
+        {"name": "target_allocation", "label": "Target Allocation", "type": "number", "default": 1.0, "required": True, "step": 0.05},
+        {"name": "top_k", "label": "Top K ETFs", "type": "number", "default": 1, "required": True, "step": 1},
+        {"name": "fallback_etf", "label": "Fallback ETF", "type": "ticker", "default": "SHY", "required": True},
+        {"name": "risk_on_basket", "label": "Risk-On Basket", "type": "ticker_list", "default": ["QQQ", "SPY", "IWM", "SMH", "XLY", "XLI", "HYG"], "required": True},
+        {"name": "defensive_basket", "label": "Defensive Basket", "type": "ticker_list", "default": ["XLV", "XLP", "XLU", "USMV", "QUAL", "GLD"], "required": True},
+        {"name": "duration_basket", "label": "Duration Basket", "type": "ticker_list", "default": ["TLT", "IEF", "LQD", "QQQ", "XLK"], "required": True},
+        {"name": "uncertain_basket", "label": "Uncertain Basket", "type": "ticker_list", "default": ["SHY", "BIL", "IEF", "GLD"], "required": True},
+    ]
+
+    UI_SPEC = {
+        "market_type": "securities",
+        "plots": [
+            "forecast_vs_actual",
+            "forecast_error",
+            "equity_curve",
+            "cumulative_return_curve",
+            "drawdown_curve",
+            "period_return_curve",
+            "weights_curve",
+            "confidence_curve",
+        ],
+    }
+
     def __init__(
         self,
         trend_window: int = 6,

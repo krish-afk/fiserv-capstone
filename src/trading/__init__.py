@@ -15,9 +15,11 @@ from src.trading.strategy import (
 from src.trading.backtest import BacktestEngine
 from src.trading.pipeline import (
     build_strategy_data,
+    build_strategy_data_from_frames,
     ensure_market_data_for_strategy,
     resolve_strategy_tickers,
     run_configured_trading_pipeline,
+    run_trading_pipeline_from_frames,
 )
 from src.trading.performance import (
     compute_metrics,
@@ -40,9 +42,11 @@ __all__ = [
     "select_best_model",
     "BacktestEngine",
     "build_strategy_data",
+    "build_strategy_data_from_frames",
     "ensure_market_data_for_strategy",
     "resolve_strategy_tickers",
     "run_configured_trading_pipeline",
+    "run_trading_pipeline_from_frames",
     "compute_metrics",
     "sensitivity_analysis",
     "summarise_sensitivity",

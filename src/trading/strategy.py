@@ -138,6 +138,35 @@ class BaseStrategy(ABC):
     def __init__(self, **params: Any):
         self.params = params
 
+    PARAMETER_SCHEMA: list[dict[str, Any]] = []
+    UI_SPEC: dict[str, Any] = {
+        "market_type": "securities",
+        "plots": [
+            "forecast_vs_actual",
+            "forecast_error",
+            "top_models_ranking",
+            "equity_curve",
+            "cumulative_return_curve",
+            "drawdown_curve",
+            "period_return_curve",
+            "weights_curve",
+            "confidence_curve",
+        ],
+    }
+    REQUIRED_INPUTS_SCHEMA: list[str] = ["forecasts"]
+
+    @classmethod
+    def parameter_schema(cls) -> list[dict[str, Any]]:
+        return list(getattr(cls, "PARAMETER_SCHEMA", []))
+
+    @classmethod
+    def ui_spec(cls) -> dict[str, Any]:
+        return dict(getattr(cls, "UI_SPEC", {}))
+
+    @classmethod
+    def required_inputs_schema(cls) -> list[str]:
+        return list(getattr(cls, "REQUIRED_INPUTS_SCHEMA", ["forecasts"]))
+
     @property
     @abstractmethod
     def name(self) -> str:
@@ -257,6 +286,31 @@ class BaseStrategy(ABC):
 
 
 class DirectionalPCEStrategy(BaseStrategy):
+
+    DISPLAY_NAME = "Directional PCE Strategy"
+    DESCRIPTION = "Trades one ticker long/short based on forecast sign."
+    REQUIRED_INPUTS_SCHEMA = ["forecasts"]
+    PARAMETER_SCHEMA = [
+        {
+            "name": "ticker",
+            "label": "Ticker",
+            "type": "ticker",
+            "default": "XLY",
+            "required": True,
+        }
+    ]
+    UI_SPEC = {
+        "market_type": "securities",
+        "plots": [
+            "forecast_vs_actual",
+            "forecast_error",
+            "equity_curve",
+            "cumulative_return_curve",
+            "drawdown_curve",
+            "period_return_curve",
+            "weights_curve",
+        ],
+    }
     def __init__(self, ticker: str = "XLY", **params: Any):
         super().__init__(ticker=ticker, **params)
         self._ticker = ticker.upper()
@@ -286,6 +340,47 @@ class DirectionalPCEStrategy(BaseStrategy):
 
 
 class ThresholdPCEStrategy(BaseStrategy):
+
+    DISPLAY_NAME = "Threshold PCE Strategy"
+    DESCRIPTION = "Trades one ticker only when the forecast magnitude exceeds a threshold."
+    REQUIRED_INPUTS_SCHEMA = ["forecasts"]
+    PARAMETER_SCHEMA = [
+        {
+            "name": "ticker",
+            "label": "Ticker",
+            "type": "ticker",
+            "default": "XLY",
+            "required": True,
+        },
+        {
+            "name": "threshold",
+            "label": "Threshold",
+            "type": "number",
+            "default": 0.2,
+            "required": True,
+            "step": 0.01,
+        },
+        {
+            "name": "scale_confidence",
+            "label": "Scale Confidence",
+            "type": "boolean",
+            "default": True,
+            "required": False,
+        },
+    ]
+    UI_SPEC = {
+        "market_type": "securities",
+        "plots": [
+            "forecast_vs_actual",
+            "forecast_error",
+            "equity_curve",
+            "cumulative_return_curve",
+            "drawdown_curve",
+            "period_return_curve",
+            "weights_curve",
+            "confidence_curve",
+        ],
+    }
     def __init__(
         self,
         ticker: str = "XLY",
@@ -481,6 +576,81 @@ def load_configured_strategy(
         f"Registered strategies: {sorted(_STRATEGY_REGISTRY)}"
     )
 
+def _strategy_descriptor(
+    cls: type[BaseStrategy],
+    *,
+    source: str,
+    strategy_file: Optional[str] = None,
+) -> dict[str, Any]:
+    return {
+        "id": f"{source}:{strategy_file or 'core'}:{cls.__name__}",
+        "label": getattr(cls, "DISPLAY_NAME", cls.__name__),
+        "description": getattr(cls, "DESCRIPTION", ""),
+        "source": source,
+        "file": strategy_file,
+        "class_name": cls.__name__,
+        "required_inputs": cls.required_inputs_schema(),
+        "parameters": cls.parameter_schema(),
+        "ui_spec": cls.ui_spec(),
+    }
+
+
+def list_available_strategies(
+    strategy_dir: Optional[Path] = None,
+) -> list[dict[str, Any]]:
+    strategy_dir = Path(strategy_dir or DEFAULT_STRATEGY_DIR)
+    catalog: dict[tuple[str, Optional[str]], dict[str, Any]] = {}
+
+    # Only treat strategies defined in THIS file as built-ins.
+    for _, cls in _STRATEGY_REGISTRY.items():
+        if cls.__module__ != __name__:
+            continue
+
+        desc = _strategy_descriptor(cls, source="builtin", strategy_file=None)
+        catalog[(cls.__name__, None)] = desc
+
+    # File-based strategies
+    if strategy_dir.exists():
+        for path in sorted(strategy_dir.glob("*.py")):
+            if path.name == "__init__.py":
+                continue
+
+            try:
+                module = _load_strategy_module(path.name, strategy_dir=strategy_dir)
+            except Exception as e:
+                print(f"[WARN] Could not load strategy file {path.name}: {e}")
+                continue
+
+            for _, obj in inspect.getmembers(module, inspect.isclass):
+                if (
+                    issubclass(obj, BaseStrategy)
+                    and obj is not BaseStrategy
+                    and obj.__module__ == module.__name__
+                ):
+                    register_strategy(obj)
+                    desc = _strategy_descriptor(
+                        obj,
+                        source="file",
+                        strategy_file=path.name,
+                    )
+                    catalog[(obj.__name__, path.name)] = desc
+
+    # Safety dedupe by visible identity
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, Optional[str]]] = set()
+
+    for desc in sorted(catalog.values(), key=lambda x: (x["label"].lower(), x["source"])):
+        key = (
+            str(desc.get("label", "")).strip().lower(),
+            str(desc.get("class_name", "")).strip(),
+            desc.get("file"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(desc)
+
+    return deduped
 
 def load_latest_run_frames(experiments_dir: Path = None) -> tuple[Path, pd.DataFrame, pd.DataFrame]:
     experiments_dir = Path(experiments_dir or config["paths"]["experiments"])

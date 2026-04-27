@@ -11,6 +11,53 @@ from src.trading.strategy import BaseStrategy, StrategyData, register_strategy
 
 @register_strategy
 class MRTSForecastMarketStrategy(BaseStrategy):
+    DISPLAY_NAME = "MRTS Forecast Market Strategy"
+    DESCRIPTION = "Trades a prediction-market-style event contract using model edge versus Bloomberg survey median."
+    REQUIRED_INPUTS_SCHEMA = ["forecasts"]
+    PARAMETER_SCHEMA = [
+        {
+            "name": "bloomberg_csv_path",
+            "label": "Bloomberg CSV Path",
+            "type": "text",
+            "default": "",
+            "required": True,
+            "placeholder": "/absolute/or/project/relative/path.csv",
+        },
+        {
+            "name": "model_rmse",
+            "label": "Model RMSE",
+            "type": "number",
+            "default": 0.15,
+            "required": True,
+            "step": 0.01,
+        },
+        {
+            "name": "edge_threshold",
+            "label": "Edge Threshold",
+            "type": "number",
+            "default": 0.15,
+            "required": True,
+            "step": 0.01,
+        },
+        {
+            "name": "contract_price",
+            "label": "Contract Price",
+            "type": "number",
+            "default": 0.5,
+            "required": True,
+            "step": 0.01,
+        },
+    ]
+    UI_SPEC = {
+        "market_type": "prediction_market",
+        "plots": [
+            "forecast_vs_actual",
+            "forecast_error",
+            "confidence_curve",
+            "edge_curve",
+            "probability_curve",
+        ],
+    }
     def __init__(
         self,
         bloomberg_csv_path: str,

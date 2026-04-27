@@ -15,6 +15,79 @@ from src.trading.strategy import BaseStrategy, StrategyData, register_strategy
 
 @register_strategy
 class KrishTradeStrategy(BaseStrategy):
+
+    DISPLAY_NAME = "Krish Trade Strategy"
+    DESCRIPTION = "Allocates between risk-on and defensive consumer names using combined PCE + MRTS forecasts."
+    REQUIRED_INPUTS_SCHEMA = ["forecasts", "mrts"]
+    PARAMETER_SCHEMA = [
+        {
+            "name": "bullish_threshold",
+            "label": "Bullish Threshold",
+            "type": "number",
+            "default": 0.75,
+            "required": True,
+            "step": 0.01,
+        },
+        {
+            "name": "bearish_threshold",
+            "label": "Bearish Threshold",
+            "type": "number",
+            "default": -0.75,
+            "required": True,
+            "step": 0.01,
+        },
+        {
+            "name": "pce_weight",
+            "label": "PCE Weight",
+            "type": "number",
+            "default": 0.6,
+            "required": True,
+            "step": 0.01,
+        },
+        {
+            "name": "mrts_weight",
+            "label": "MRTS Weight",
+            "type": "number",
+            "default": 0.4,
+            "required": True,
+            "step": 0.01,
+        },
+        {
+            "name": "target_allocation",
+            "label": "Target Allocation",
+            "type": "number",
+            "default": 0.25,
+            "required": True,
+            "step": 0.01,
+        },
+        {
+            "name": "risk_on_ticker",
+            "label": "Risk-On Ticker",
+            "type": "ticker",
+            "default": "XLY",
+            "required": True,
+        },
+        {
+            "name": "defensive_ticker",
+            "label": "Defensive Ticker",
+            "type": "ticker",
+            "default": "XLP",
+            "required": True,
+        },
+    ]
+    UI_SPEC = {
+        "market_type": "securities",
+        "plots": [
+            "forecast_vs_actual",
+            "forecast_error",
+            "equity_curve",
+            "cumulative_return_curve",
+            "drawdown_curve",
+            "period_return_curve",
+            "weights_curve",
+            "confidence_curve",
+        ],
+    }
     def __init__(
         self,
         bullish_threshold: float = 0.75,

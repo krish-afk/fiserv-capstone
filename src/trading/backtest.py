@@ -76,6 +76,60 @@ def _next_trading_day(index: pd.DatetimeIndex, dt: pd.Timestamp) -> Optional[pd.
         return None
     return pd.Timestamp(candidates[0])
 
+def _previous_trading_day(index: pd.DatetimeIndex, dt: pd.Timestamp) -> Optional[pd.Timestamp]:
+    candidates = index[index <= pd.Timestamp(dt)]
+    if len(candidates) == 0:
+        return None
+    return pd.Timestamp(candidates[-1])
+
+
+def _resolve_execution_window(
+    close_index: pd.DatetimeIndex,
+    positions_df: pd.DataFrame,
+    trade_start_date: Optional[str] = None,
+    trade_end_date: Optional[str] = None,
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Resolve the exact tradable evaluation window.
+
+    User-provided dates are trading evaluation dates only. They do not trim
+    forecast history or Monte Carlo calibration history. The start date maps to
+    the first available market date on/after the requested start; the end date
+    maps to the last available market date on/before the requested end.
+    """
+    if positions_df is None or positions_df.empty:
+        raise ValueError("No strategy positions/signals are available for trading evaluation.")
+
+    signal_dates = pd.DatetimeIndex(pd.to_datetime(positions_df.index)).sort_values().unique()
+    if len(signal_dates) == 0:
+        raise ValueError("No valid signal dates are available for trading evaluation.")
+
+    start_anchor = pd.Timestamp(trade_start_date) if trade_start_date else pd.Timestamp(signal_dates.min())
+    execution_start = _next_trading_day(close_index, start_anchor)
+    if execution_start is None:
+        raise ValueError(
+            f"No market prices are available on or after requested trade start date {start_anchor.date().isoformat()}."
+        )
+
+    if trade_end_date:
+        end_anchor = pd.Timestamp(trade_end_date)
+        execution_end = _previous_trading_day(close_index, end_anchor)
+        if execution_end is None:
+            raise ValueError(
+                f"No market prices are available on or before requested trade end date {end_anchor.date().isoformat()}."
+            )
+    else:
+        execution_end = _next_trading_day(close_index, pd.Timestamp(signal_dates.max()))
+        if execution_end is None:
+            execution_end = pd.Timestamp(close_index.max())
+
+    if execution_end <= execution_start:
+        raise ValueError(
+            "Trade date window is too short after aligning to market prices: "
+            f"{execution_start.date().isoformat()} to {execution_end.date().isoformat()}."
+        )
+
+    return pd.Timestamp(execution_start), pd.Timestamp(execution_end)
+
 
 def _weight_columns(df: pd.DataFrame) -> list[str]:
     return [c for c in df.columns if str(c).startswith("weight__")]
@@ -180,26 +234,51 @@ def _run_weight_backtest(
     prices: pd.DataFrame,
     initial_cash: float,
     transaction_cost: float,
+    trade_start_date: Optional[str] = None,
+    trade_end_date: Optional[str] = None,
 ) -> tuple[pd.DataFrame, dict, pd.Series]:
     tickers = _extract_requested_tickers(positions_df)
     if not tickers:
         raise ValueError("No traded tickers found in strategy output.")
 
     close_prices = _close_price_frame(prices, tickers)
+    execution_start, execution_end = _resolve_execution_window(
+        close_index=close_prices.index,
+        positions_df=positions_df,
+        trade_start_date=trade_start_date,
+        trade_end_date=trade_end_date,
+    )
+    force_exit_at_window_end = bool(trade_end_date)
+
     equity = float(initial_cash)
     prev_weights = pd.Series(0.0, index=tickers, dtype=float)
     trade_rows: list[dict] = []
-    equity_points: list[tuple[pd.Timestamp, float]] = []
+    equity_points: list[tuple[pd.Timestamp, float]] = [(execution_start, equity)]
 
-    for i in range(len(positions_df) - 1):
+    for i in range(len(positions_df)):
+        if i >= len(positions_df) - 1 and not force_exit_at_window_end:
+            continue
+
         row = positions_df.iloc[i]
-        next_row = positions_df.iloc[i + 1]
         signal_date = pd.Timestamp(positions_df.index[i])
-        next_signal_date = pd.Timestamp(positions_df.index[i + 1])
 
-        entry_date = _next_trading_day(close_prices.index, signal_date)
-        exit_date = _next_trading_day(close_prices.index, next_signal_date)
-        if entry_date is None or exit_date is None or exit_date <= entry_date:
+        natural_entry_date = _next_trading_day(close_prices.index, signal_date)
+        if natural_entry_date is None:
+            continue
+
+        if i < len(positions_df) - 1:
+            next_signal_date = pd.Timestamp(positions_df.index[i + 1])
+            natural_exit_date = _next_trading_day(close_prices.index, next_signal_date)
+        else:
+            next_signal_date = execution_end
+            natural_exit_date = execution_end
+
+        if natural_exit_date is None:
+            continue
+
+        entry_date = max(pd.Timestamp(natural_entry_date), execution_start)
+        exit_date = min(pd.Timestamp(natural_exit_date), execution_end)
+        if exit_date <= entry_date:
             continue
 
         weights = pd.Series(
@@ -212,6 +291,7 @@ def _run_weight_backtest(
 
         ticker_returns = {}
         gross_return = 0.0
+
         for ticker in tickers:
             entry_px = float(close_prices.loc[entry_date, ticker])
             exit_px = float(close_prices.loc[exit_date, ticker])
@@ -249,8 +329,9 @@ def _run_weight_backtest(
         )
 
     trades_df = pd.DataFrame(trade_rows)
+
     if trades_df.empty:
-        equity_curve = pd.Series([initial_cash], index=[pd.Timestamp.today().normalize()], name="equity")
+        equity_curve = pd.Series([initial_cash], index=[execution_start], name="equity")
         results = {
             "sharpe_ratio": float("nan"),
             "max_drawdown_pct": 0.0,
@@ -266,6 +347,8 @@ def _run_weight_backtest(
             "absolute_return": 0.0,
             "monthly_mode": "multi_asset_weight",
             "tickers": tickers,
+            "execution_start": execution_start.date().isoformat(),
+            "execution_end": execution_end.date().isoformat(),
         }
         return trades_df, results, equity_curve
 
@@ -274,6 +357,7 @@ def _run_weight_backtest(
         index=pd.to_datetime([dt for dt, _ in equity_points]),
         name="equity",
     )
+
     period_returns = trades_df["net_return"].astype(float)
     win_mask = period_returns > 0
     years = max(len(trades_df) / 12.0, 1.0 / 12.0)
@@ -295,8 +379,12 @@ def _run_weight_backtest(
         "absolute_return": float(equity - initial_cash),
         "monthly_mode": "multi_asset_weight",
         "tickers": tickers,
+        "execution_start": execution_start.date().isoformat(),
+        "execution_end": execution_end.date().isoformat(),
     }
+
     return trades_df, results, equity_curve
+
 
 def _historical_risk_free_daily_from_macro(
     data: StrategyData,
@@ -335,28 +423,30 @@ def _historical_risk_free_daily_from_macro(
 def _simulation_price_window(
     positions_df: pd.DataFrame,
     prices: pd.DataFrame,
+    trade_start_date: Optional[str] = None,
+    trade_end_date: Optional[str] = None,
 ) -> tuple[pd.DataFrame, pd.Timestamp, pd.Timestamp]:
     tickers = _extract_requested_tickers(positions_df)
     if not tickers:
         raise ValueError("No traded tickers found in strategy output.")
 
     close_prices = _close_price_frame(prices, tickers)
-    signal_dates = pd.DatetimeIndex(pd.to_datetime(positions_df.index)).sort_values().unique()
+    start_dt, end_dt = _resolve_execution_window(
+        close_index=close_prices.index,
+        positions_df=positions_df,
+        trade_start_date=trade_start_date,
+        trade_end_date=trade_end_date,
+    )
 
-    start_dt = _next_trading_day(close_prices.index, signal_dates.min())
-    if start_dt is None:
-        raise ValueError("Could not find a tradable start date for Monte Carlo simulation.")
+    simulation_window = close_prices.loc[
+        (close_prices.index >= start_dt) &
+        (close_prices.index <= end_dt)
+    ].copy()
 
-    end_dt = _next_trading_day(close_prices.index, signal_dates.max())
-    if end_dt is None:
-        end_dt = close_prices.index.max()
-
-    simulation_window = close_prices.loc[(close_prices.index >= start_dt) & (close_prices.index <= end_dt)].copy()
     if simulation_window.empty:
-        raise ValueError("Simulation window is empty after aligning signal dates to market prices.")
+        raise ValueError("Simulation window is empty after aligning trade dates to market prices.")
 
     return simulation_window, pd.Timestamp(start_dt), pd.Timestamp(end_dt)
-
 
 def _calibration_returns(
     base_close_prices: pd.DataFrame,
@@ -473,6 +563,7 @@ def _aggregate_monte_carlo_results(
         "sharpe_ratio",
         "max_drawdown_pct",
         "win_rate",
+        "num_trades",
         "final_value",
         "absolute_return",
     ]
@@ -480,6 +571,7 @@ def _aggregate_monte_carlo_results(
         series = pd.to_numeric(path_results_df[col], errors="coerce").dropna()
         if series.empty:
             continue
+
         summary["metrics"][col] = {
             "mean": float(series.mean()),
             "median": float(series.median()),
@@ -492,6 +584,12 @@ def _aggregate_monte_carlo_results(
             "p95": float(series.quantile(0.95)),
         }
 
+        # The dashboard expects scalar metrics. For Monte Carlo, use the median path.
+        summary[col] = summary["metrics"][col]["median"]
+
+    if "return_pct" in summary["metrics"]:
+        summary["cumulative_return"] = summary["metrics"]["return_pct"]["median"] / 100.0
+        
     if equity_curves:
         equity_df = pd.concat(equity_curves, axis=1).sort_index().ffill()
         median_equity = equity_df.median(axis=1)
@@ -507,6 +605,8 @@ def _run_weight_monte_carlo(
     transaction_cost: float,
     default_ticker: str,
     mc_cfg: dict,
+    trade_start_date: Optional[str] = None,
+    trade_end_date: Optional[str] = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
     base_signals_df = strategy.generate_signals(data)
     base_positions_df = _coerce_position_frame(base_signals_df, default_ticker=default_ticker)
@@ -518,6 +618,8 @@ def _run_weight_monte_carlo(
     simulation_window, _, _ = _simulation_price_window(
         positions_df=base_positions_df,
         prices=data.prices,
+        trade_start_date=trade_start_date,
+        trade_end_date=trade_end_date,
     )
 
     drift_mode = str(mc_cfg.get("drift_mode", "historical")).lower()
@@ -565,6 +667,8 @@ def _run_weight_monte_carlo(
             prices=simulated_prices,
             initial_cash=initial_cash,
             transaction_cost=transaction_cost,
+            trade_start_date=trade_start_date,
+            trade_end_date=trade_end_date,
         )
 
         equity_curves.append(equity_curve.rename(f"path_{path_id}"))
@@ -1068,7 +1172,10 @@ class BacktestEngine:
         strategy: BaseStrategy,
         data: StrategyData,
         output_dir: Optional[Path] = None,
-        test_modes: Optional[list] = None,
+        test_mode: Optional[str] = None,
+        trade_start_date: Optional[str] = None,
+        trade_end_date: Optional[str] = None,
+
     ) -> dict:
         if data.prices is None:
             raise ValueError(
@@ -1076,60 +1183,56 @@ class BacktestEngine:
                 "Load market data before running the trading pipeline."
             )
 
-        # Clip forecasts to the held-out test period so evaluation never
-        # covers the training/validation window used for model selection.
-        test_start = config.get("data", {}).get("test_start")
-        if test_start:
-            data = _clip_to_test_start(data, pd.Timestamp(test_start))
+        test_mode = _coerce_test_mode(test_mode or _test_mode_from_config())
+        default_ticker = strategy.default_ticker or self.ticker
 
-        modes = test_modes if test_modes is not None else _test_modes_from_config()
-        default_ticker = strategy.default_ticker or ""
-        combined: dict[str, dict] = {}
+        if test_mode == "monte_carlo":
+            mc_cfg = _monte_carlo_config()
+            signals_df, trades_df, path_results_df, results = _run_weight_monte_carlo(
+                strategy=strategy,
+                data=data,
+                initial_cash=self.initial_cash,
+                transaction_cost=self.commission,
+                default_ticker=default_ticker,
+                mc_cfg=mc_cfg,
+                trade_start_date=trade_start_date,
+                trade_end_date=trade_end_date,
+            )
+            positions_df = _coerce_position_frame(signals_df, default_ticker=default_ticker)
+        else:
+            signals_df = strategy.generate_signals(data)
+            positions_df = _coerce_position_frame(signals_df, default_ticker=default_ticker)
+            trades_df, results, equity_curve = _run_weight_backtest(
+                positions_df=positions_df,
+                prices=data.prices,
+                initial_cash=self.initial_cash,
+                transaction_cost=self.commission,
+                trade_start_date=trade_start_date,
+                trade_end_date=trade_end_date,
+            )
+            path_results_df = pd.DataFrame()
+            results["mode"] = "backtest"
+            results["equity_curve"] = {
+                ts.isoformat(): float(val) for ts, val in equity_curve.items()
+            }
 
-        for mode in modes:
-            if mode == "monte_carlo":
-                mc_cfg = _monte_carlo_config()
-                signals_df, trades_df, path_results_df, results = _run_weight_monte_carlo(
-                    strategy=strategy,
-                    data=data,
-                    initial_cash=self.initial_cash,
-                    transaction_cost=self.commission,
-                    default_ticker=default_ticker,
-                    mc_cfg=mc_cfg,
-                )
-                positions_df = _coerce_position_frame(signals_df, default_ticker=default_ticker)
-                results["mode"] = "monte_carlo"
-            else:
-                signals_df = strategy.generate_signals(data)
-                positions_df = _coerce_position_frame(signals_df, default_ticker=default_ticker)
-                trades_df, results, equity_curve = _run_weight_backtest(
-                    positions_df=positions_df,
-                    prices=data.prices,
-                    initial_cash=self.initial_cash,
-                    transaction_cost=self.commission,
-                )
-                path_results_df = pd.DataFrame()
-                results["mode"] = "backtest"
-                results["equity_curve"] = {
-                    ts.isoformat(): float(val) for ts, val in equity_curve.items()
-                }
+        results["strategy"] = strategy.name
+        results["initial_cash"] = self.initial_cash
+        results["ticker"] = self.ticker
+        results["trade_window_start"] = trade_start_date
+        results["trade_window_end"] = trade_end_date
 
-            results["strategy"] = strategy.name
-            results["initial_cash"] = self.initial_cash
-            results["ticker"] = default_ticker
-            combined[mode] = results
+        if output_dir is not None:
+            self._write_portfolio_results(
+                results=results,
+                raw_signals_df=signals_df,
+                positions_df=positions_df,
+                trades_df=trades_df,
+                path_results_df=path_results_df,
+                output_dir=Path(output_dir),
+            )
 
-            if output_dir is not None:
-                self._write_portfolio_results(
-                    results=results,
-                    raw_signals_df=signals_df,
-                    positions_df=positions_df,
-                    trades_df=trades_df,
-                    path_results_df=path_results_df,
-                    output_dir=Path(output_dir),
-                )
-
-        return combined
+        return results
 
     def run_forecastex(
         self,

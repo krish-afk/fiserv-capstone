@@ -29,13 +29,13 @@ const BRAND_LOGOS = [
     name: 'Georgia Tech',
     fallback: 'GT',
     variant: 'gt',
-    assets: ['public/gt-logo.png', '/logos/gt-logo.png', '/GT-logo.svg', '/GT-logo.png'],
+    assets: ['/gt-logo.png', '/logos/gt-logo.png', '/GT-logo.svg', '/GT-logo.png'],
   },
   {
     name: 'Fiserv',
     fallback: 'fiserv',
     variant: 'fiserv',
-    assets: ['public/fiserv-logo.png', '/logos/fiserv-logo.png', '/Fiserv-logo.svg', '/Fiserv-logo.png'],
+    assets: ['/fiserv-logo.png', '/logos/fiserv-logo.png', '/Fiserv-logo.svg', '/Fiserv-logo.png'],
   },
 ]
 

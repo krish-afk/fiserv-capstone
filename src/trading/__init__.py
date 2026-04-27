@@ -1,8 +1,6 @@
 from src.trading.strategy import (
     StrategyData,
     BaseStrategy,
-    DirectionalPCEStrategy,
-    ThresholdPCEStrategy,
     build_strategy,
     load_strategy_from_file,
     load_configured_strategy,
@@ -30,8 +28,6 @@ from src.trading.performance import (
 __all__ = [
     "StrategyData",
     "BaseStrategy",
-    "DirectionalPCEStrategy",
-    "ThresholdPCEStrategy",
     "build_strategy",
     "load_strategy_from_file",
     "load_configured_strategy",

@@ -188,7 +188,10 @@ class BaseStrategy(ABC):
     def default_ticker(self) -> Optional[str]:
         if self.tickers:
             return self.tickers[0].upper()
-        return config.get("trading", {}).get("portfolio", {}).get("ticker")
+        try:
+            return get_active_strategy_config(config).get("params", {}).get("ticker")
+        except KeyError:
+            return None
 
     @staticmethod
     def price_col(ticker: str, field: str = "close") -> str:
@@ -507,6 +510,18 @@ def _resolve_strategy_class_from_module(module, class_name: Optional[str] = None
     return candidates[0]
 
 
+def get_active_strategy_config(cfg: Optional[dict] = None) -> dict:
+    cfg = cfg or config
+    trading_cfg = cfg.get("trading", {})
+    name = trading_cfg.get("active_strategy", "")
+    if not name:
+        raise KeyError("trading.active_strategy is not set in config.")
+    strategies = trading_cfg.get("strategies", {})
+    if name not in strategies:
+        raise KeyError(f"Strategy '{name}' not found under trading.strategies in config.")
+    return strategies[name]
+
+
 def build_strategy(
     name: Optional[str] = None,
     **params: Any,
@@ -535,26 +550,30 @@ def load_configured_strategy(
     strategy_dir: Optional[Path] = None,
 ) -> BaseStrategy:
     cfg = cfg or config
-    trading_cfg = cfg.get("trading", {})
-    strategy_cfg = trading_cfg.get("strategy", {})
+    strategy_cfg = get_active_strategy_config(cfg)
+    class_name = strategy_cfg.get("class", "")
+    if not class_name:
+        raise KeyError("Active strategy config is missing 'class'.")
+    params = strategy_cfg.get("params", {}) or {}
 
-    if strategy_cfg.get("file"):
-        return load_strategy_from_file(
-            strategy_file=strategy_cfg["file"],
-            class_name=strategy_cfg.get("class"),
-            strategy_dir=strategy_dir,
-            params=strategy_cfg.get("params", {}),
-        )
+    if class_name in _STRATEGY_REGISTRY:
+        return _STRATEGY_REGISTRY[class_name](**params)
 
-    # Backward-compatible fallback for old registry-only configs.
-    legacy_name = strategy_cfg.get("name") or trading_cfg.get("strategy_name")
-    legacy_params = strategy_cfg.get("params") or trading_cfg.get("strategy_params", {})
-    if legacy_name:
-        return build_strategy(name=legacy_name, **legacy_params)
+    scan_dir = Path(strategy_dir or DEFAULT_STRATEGY_DIR)
+    for py_file in sorted(scan_dir.glob("*.py")):
+        try:
+            module = _load_strategy_module(py_file.name, strategy_dir=scan_dir)
+        except Exception:
+            continue
+        if not hasattr(module, class_name):
+            continue
+        cls = _resolve_strategy_class_from_module(module, class_name=class_name)
+        register_strategy(cls)
+        return cls(**params)
 
     raise KeyError(
-        "No strategy configured. Set trading.strategy.file in config.yaml "
-        "(recommended) or trading.strategy.name (legacy)."
+        f"Strategy class '{class_name}' not found in registry or in {scan_dir}. "
+        f"Registered strategies: {sorted(_STRATEGY_REGISTRY)}"
     )
 
 def _strategy_descriptor(
@@ -659,7 +678,10 @@ def load_best_forecasts(experiments_dir: Path = None) -> pd.DataFrame:
 
 
 def _panel_selection_config(panel_name: Optional[str]) -> dict[str, Any]:
-    sel = config.get("trading", {}).get("selected_model", {})
+    try:
+        sel = get_active_strategy_config(config).get("selected_model", {})
+    except KeyError:
+        sel = {}
     if panel_name and isinstance(sel.get(panel_name), dict):
         return sel[panel_name]
     return sel

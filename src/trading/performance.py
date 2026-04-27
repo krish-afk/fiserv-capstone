@@ -202,19 +202,20 @@ def sensitivity_analysis(
             )
 
             try:
-                results = engine.run_portfolio(strategy, noisy_data, output_dir=None)
+                all_results = engine.run_portfolio(strategy, noisy_data, output_dir=None, test_modes=["backtest"])
+                bt = all_results.get("backtest", {})
             except Exception as e:
                 print(f"[WARN] sensitivity_analysis sigma={sigma} trial={trial} failed: {e}")
-                results = {}
+                bt = {}
 
             rows.append({
                 "sigma":      sigma,
                 "trial":      trial,
                 "rmse":       rmse,
-                "sharpe":     results.get("sharpe_ratio",  float("nan")),
-                "return_pct": results.get("return_pct",    float("nan")),
-                "win_rate":   results.get("win_rate",      float("nan")),
-                "num_trades": results.get("num_trades",    float("nan")),
+                "sharpe":     bt.get("sharpe_ratio",  float("nan")),
+                "return_pct": bt.get("return_pct",    float("nan")),
+                "win_rate":   bt.get("win_rate",      float("nan")),
+                "num_trades": bt.get("num_trades",    float("nan")),
             })
 
     return pd.DataFrame(rows)

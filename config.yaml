@@ -6,11 +6,14 @@ paths:
   forecasts: "data/forecasts/"
   experiments: "experiments/"
 
+# ---------------------------------------------------------------------------
+# Data — sources, date range, train/test split, and panel definitions.
+# Panels combine a target, transform, and geography/sector filters into a
+# named dataset; both the experiment and trading stages reference panels by name.
+# ---------------------------------------------------------------------------
 data:
-  # All potential prediction targets. Both live in the master dataset.
-  # Feature engineering excludes every column in this list — targets are
-  # never lagged or rolled. Which target a given experiment uses is set
-  # per-panel below (panels.<name>.target).
+  # All prediction targets; excluded from feature engineering (never lagged or rolled).
+  # Which target an experiment uses is set per-panel (see panels.<name>.target).
   targets: ["pce", "mrts"]
   date_col: "date"
   frequency: "MS"
@@ -30,10 +33,11 @@ data:
       series_name: "pce"
       frequency: "M"
       year: "ALL"
+    
+    # "series" keys are FRED series IDs; values are the column names used throughout the pipeline.
+    # ingest.py fetches by ID and renames; all downstream code uses the snake_case names.
     fred:
       type: "api"
-      # Keys are FRED series IDs; values are the column names used throughout the pipeline.
-      # ingest.py fetches by ID and renames; all downstream code uses the snake_case names.
       series:
         # monetary
         FEDFUNDS:   "fed_funds_rate"          # Effective federal funds rate
@@ -64,64 +68,63 @@ data:
     method: "ffill"                   # How to handle frequency mismatches
     max_fill_periods: 3               # Don't ffill more than N periods
 
+  # Panel schema — each entry defines a named prediction task:
+  #   <name>:
+  #     target:           "pce" | "mrts"
+  #     target_transform: null (level) | "mom" (month-over-month %) | "yoy" (year-over-year %)
+  #     geography:        [<...>]
+  #     sectors:          [<...>]
+  #     subsectors:       [<...>]
   panels:
     pce_national:
       target: "pce"
-      target_transform: null          # predict the level
-      geography: ["US"]                 # US = national filter
-      sectors: ["ALL"]                   # null = all sectors
-      subsectors: ["ALL"]
+      target_transform: null          
+      geography: ["US"]               
+      sectors: ["ALL"]                
+      subsectors: ["ALL"]             
     pce_national_mom:
       target: "pce"
-      target_transform: "mom"         # predict MoM %
+      target_transform: "mom"
       geography: ["US"]
       sectors: ["ALL"]
       subsectors: ["ALL"]
     pce_national_yoy:
       target: "pce"
-      target_transform: "yoy"         # predict YoY %
+      target_transform: "yoy"
       geography: ["US"]
       sectors: ["ALL"]
       subsectors: ["ALL"]
-    pce_california:
-      target: "pce"
-      target_transform: null
-      geography: ["CA"]
-      sectors: ["ALL"]
-      subsectors: ["ALL"]
-    pce_california_retail:
-      target: "pce"
-      target_transform: null
-      geography: ["CA"]
-      sectors: ["Retail Trade"]
-      subsectors: ["ALL"]
-    pce_california_retail_foodbev:
-      target: "pce"
-      target_transform: null
-      geography: ["CA"]
-      sectors: ["Retail Trade"]
-      subsectors: ["Food and Beverage Retailers"]
     mrts_national:
       target: "mrts"
       target_transform: null
       geography: ["US"]
       sectors: ["ALL"]
       subsectors: ["ALL"]
-    mrts_atlanta_metro_mom:
+    mrts_national_mom:
       target: "mrts"
       target_transform: "mom"
-      geography: ["Atlanta-Sandy Springs-Alpharetta GA"]
+      geography: ["US"]
+      sectors: ["ALL"]
+      subsectors: ["ALL"]
+    mrts_national_yoy:
+      target: "mrts"
+      target_transform: "yoy"
+      geography: ["US"]
       sectors: ["ALL"]
       subsectors: ["ALL"]
 
+# ---------------------------------------------------------------------------
+# Features — lag depths, rolling windows, and named feature subsets.
+# Feature sets are glob-matched against post-build column names and referenced
+# by name in the experiment grid to select inputs for each trial.
+# ---------------------------------------------------------------------------
 features:
   lags: [1, 3, 6, 12]
   rolling_windows: [3, 6, 12]
   growth_rates: true
 
-  # Named feature subsets used by the experiment grid.
-  # Values are fnmatch glob patterns matched against X.columns
-  # (post build_all_features). An empty list signals X=None (pure time-series).
+  # Named feature subsets referenced by the experiment grid; values are fnmatch
+  # globs matched against post-build column names. An empty list signals X=None.
   feature_sets:
     none: []                    # Pass X=None — for pure time-series models
     all_features: ["*"]         # Full feature matrix, unfiltered
@@ -159,10 +162,17 @@ features:
       - "natural_gas_price_lag*"
       - "import_price_index_lag*"
 
+# ---------------------------------------------------------------------------
+# Transforms — scaling and differencing applied after feature construction,
+# before model fitting.
+# ---------------------------------------------------------------------------
 transforms:
   scaling: "standard"                 # "standard", "minmax", or null
   differencing: 1                     # Order of differencing; 0 = none
 
+# ---------------------------------------------------------------------------
+# Forecasting — forecast horizons and walk-forward validation parameters.
+# ---------------------------------------------------------------------------
 forecasting:
   horizons: [1]            # Primary; extend to [1, 3, 6] for multi-step
   walk_forward_min_train: 36  # Minimum observations before first forecast
@@ -262,66 +272,148 @@ experiment:
           feature_sets: [fsbi_lags, fsbi_and_macro_lags]
 
 # ---------------------------------------------------------------------------
-# Trading stage — strategy selection, backtest parameters, market data,
-#                 FORECASTEX configuration, and sensitivity analysis.
+# Trading stage — strategy selection, evaluation parameters, and market data.
+# Set active_strategy to the key of the strategy to run. test_modes controls
+# which evaluation methods run; include both for a backtest/MC sanity check.
 # ---------------------------------------------------------------------------
 trading:
   enabled: true
-  test_mode: "monte_carlo"   # "backtest" or "monte_carlo"
+  active_strategy: "pce_pairs"   # Key of strategy to run from strategies dict below
+  test_modes: ["backtest"]         # "backtest" | "monte_carlo" | both
 
-  selected_model:
-    model_name: ""
-    feature_set: ""
-    panel_name: "pce_national_mom"
-
-  strategy:
-    file: "krish_trade_strategy.py"
-    class: "KrishTradeStrategy"
-    params:
-      bullish_threshold: 0.75
-      bearish_threshold: -0.75
-      pce_weight: 0.6
-      mrts_weight: 0.4
-      target_allocation: 0.25
-      risk_on_ticker: "XLY"
-      defensive_ticker: "XLP"
-
-  forecast_panels:
-    primary: "pce_national_mom"
-    mrts: "mrts_national"
-
+  # Evaluation environment — shared across all strategies
   portfolio:
     initial_cash: 100000
-    commission: 0.002
-    ticker: "XLY"
-  
+    commission: 0.002         # equity strategies: per-trade cost as fraction of turnover
+    contract_value: 100.0     # prediction market strategies: notional value per contract
+    bid_ask_spread: 0.02      # prediction market strategies: spread cost per contract
+
   monte_carlo:
     model: "gbm"
     n_paths: 500
     random_seed: 42
-    drift_mode: "historical"   # "historical", "zero", "risk_free"
+    drift_mode: "historical"          # "historical", "zero", "risk_free"
     lookback_days: 252
-    risk_free_column: null     # optional explicit column if already in macro data
+    risk_free_column: null            # optional explicit column if already in macro data
     save_path_details: true
-
-  forecastex:
-    enabled: false
-    contract_value: 100.0
-    bid_ask_spread: 0.02
-
-  market_data:
-    source: "yfinance"
-    tickers:
-      - "SPY"
-    start_date: "2019-01-01"
-    end_date: "2026-02-01"
-    refresh: false
 
   sensitivity_analysis:
     enabled: true
     noise_sigmas: [0.0, 0.1, 0.2, 0.5, 1.0, 2.0]
     n_trials: 50
     random_seed: 42
+
+  market_data:
+    source: "yfinance"                # only invoked when a strategy declares tickers
+    refresh: false
+
+  strategies:
+    krish:
+      class: "KrishTradeStrategy"
+      # Maps role names the strategy expects → panel names from data.panels.
+      # Role names are strategy-defined; check the strategy class for required_inputs.
+      forecast_panels:
+        primary: "pce_national_mom"   # feeds strategy input "forecasts"
+        mrts: "mrts_national"         # feeds strategy input "mrts"
+      # Pins a specific model/feature_set for each panel; keys match forecast_panels values.
+      # Set both fields to null to auto-select by lowest RMSE from experiment results.
+      selected_model:
+        pce_national_mom:
+          model_name: null
+          feature_set: null
+        mrts_national:
+          model_name: null
+          feature_set: null
+      forecastex:
+        enabled: false
+      params:
+        ticker: "XLY"
+        bullish_threshold: 0.75
+        bearish_threshold: -0.75
+        pce_weight: 0.6
+        mrts_weight: 0.4
+        target_allocation: 0.25
+        risk_on_ticker: "XLY"
+        defensive_ticker: "XLP"
+
+    mrts_event:
+      class: "MRTSForecastMarketStrategy"
+      # Role "primary" maps to the panel whose forecasts are compared against Bloomberg consensus.
+      forecast_panels:
+        primary: "mrts_national"      # feeds strategy input "forecasts"
+      # Set both fields to null to auto-select by lowest RMSE from experiment results.
+      selected_model:
+        mrts_national:
+          model_name: null
+          feature_set: null
+      forecastex:
+        enabled: true
+      params:
+        bloomberg_csv_path: "data/raw/bbg_mrts.csv"
+        model_rmse: 0.15
+        edge_threshold: 0.15
+        contract_price: 0.50
+
+    anjalika_adaptive_regime:
+      class: AdaptiveRegimeStrategy
+      forecast_panels:
+        primary: "pce_national_mom" 
+      selected_model:
+        pce_national_mom:
+          model_name: null
+          feature_set: null
+        mrts_national:
+          model_name: null
+          feature_set: null
+      forecastex:
+        enabled: false
+      params:
+        trend_window: 6
+        z_window: 12
+        uncertainty_window: 6
+        risk_on_gap_z: 0.4
+        risk_on_delta_z: 0.2
+        defensive_gap_z: 0.2
+        duration_gap_z: -0.1
+        falling_delta_z: -0.6
+        uncertainty_ratio_thresh: 1.35
+        ambiguous_band: 0.2
+        top_k: 1
+        min_abs_mom: 0.0
+        use_ma_filter: false
+        target_allocation: 1.0
+        score_w_3m: 0.55
+        score_w_6m: 0.30
+        score_w_12m: 0.15
+        score_w_vol: 0.25
+        fallback_etf: SHY
+        risk_on_basket: [QQQ, SPY, IWM, SMH, XLY, XLI, HYG]
+        defensive_basket: [XLV, XLP, XLU, USMV, QUAL, GLD]
+        duration_basket: [TLT, IEF, LQD, QQQ, XLK]
+        uncertain_basket: [SHY, BIL, IEF, GLD]
   
+    pce_pairs:
+      class: "PCEPairsStrategy"
+      forecast_panels:
+        primary: "pce_national_mom"
+      selected_model:
+        pce_national_mom:
+          model_name: null
+          feature_set: null
+      forecastex:
+        enabled: false
+      params:
+        # asset pair
+        ticker_a: "WMT"   # consumer discretionary WMT | XLY
+        ticker_b: "TGT"   # consumer staples TGT | XLP 
+        # macro signal
+        macro_threshold: 0.0    # pce must exceed abs(magnitude) to register a regime; higher requires stronger signal
+        # spread and z-score
+        zscore_window: 20   # trading days rolling window for z-score computation
+        entry_z: 1.5  # |z| threshold to open a position
+        exit_z: 0.8   # |z| threshold to close a position (mean reversion)
+        # dollar-neutral position sizing
+        position_size: 0.5   # long leg weight; short leg gets -position_size
+
 logging:
   level: "INFO"

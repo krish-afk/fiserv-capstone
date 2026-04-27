@@ -21,9 +21,9 @@ __pycache__/
 *.key
 *.pem
 
-# Local config
-config_local.yaml
-config_local.json
+# # Local config
+# config_local.yaml
+# config_local.json
 
 # Data files
 data/

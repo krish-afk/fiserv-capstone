@@ -251,3 +251,19 @@ Walk-forward (expanding-window) evaluation is used for all models. The minimum t
 | Census Bureau | MRTS total retail sales (NAICS 44-45) | Free API key |
 | Fiserv FSBI | Small Business Index by geography, sector, subsector | Provided dataset |
 | Yahoo Finance | Daily OHLCV for XLY, SPY | No key required |
+
+
+
+## Running the Dashboard
+
+### Frontend:
+-- Open a new terminal
+-- Go to src/frontend and run:
+    i) npm install
+    ii) npm run dev
+
+## Backend
+-- Open a new terminal
+-- From the main directory run:
+    i) pip install -r requirements.txt
+    ii) flask --app src.backend.app run

@@ -221,11 +221,16 @@ def _max_drawdown(equity_curve: pd.Series) -> float:
 
 
 def _annualized_sharpe(returns: pd.Series, periods_per_year: int = 12) -> float:
+    returns = pd.to_numeric(returns, errors="coerce").dropna()
+
     if len(returns) < 2:
         return float("nan")
-    vol = returns.std(ddof=1)
-    if vol == 0 or pd.isna(vol):
+
+    vol = float(returns.std(ddof=1))
+
+    if pd.isna(vol) or vol < 1e-12:
         return float("nan")
+
     return float(np.sqrt(periods_per_year) * returns.mean() / vol)
 
 
@@ -1172,10 +1177,9 @@ class BacktestEngine:
         strategy: BaseStrategy,
         data: StrategyData,
         output_dir: Optional[Path] = None,
-        test_mode: Optional[str] = None,
+        test_modes: Optional[list] = None,
         trade_start_date: Optional[str] = None,
         trade_end_date: Optional[str] = None,
-
     ) -> dict:
         if data.prices is None:
             raise ValueError(
@@ -1183,57 +1187,85 @@ class BacktestEngine:
                 "Load market data before running the trading pipeline."
             )
 
-        test_mode = _coerce_test_mode(test_mode or _test_mode_from_config())
-        default_ticker = strategy.default_ticker or self.ticker
+        # Clip forecasts to the held-out test period so evaluation never
+        # covers the training/validation window used for model selection.
+        test_start = config.get("data", {}).get("test_start")
+        if test_start:
+            data = _clip_to_test_start(data, pd.Timestamp(test_start))
 
-        if test_mode == "monte_carlo":
-            mc_cfg = _monte_carlo_config()
-            signals_df, trades_df, path_results_df, results = _run_weight_monte_carlo(
-                strategy=strategy,
-                data=data,
-                initial_cash=self.initial_cash,
-                transaction_cost=self.commission,
-                default_ticker=default_ticker,
-                mc_cfg=mc_cfg,
-                trade_start_date=trade_start_date,
-                trade_end_date=trade_end_date,
-            )
-            positions_df = _coerce_position_frame(signals_df, default_ticker=default_ticker)
-        else:
-            signals_df = strategy.generate_signals(data)
-            positions_df = _coerce_position_frame(signals_df, default_ticker=default_ticker)
-            trades_df, results, equity_curve = _run_weight_backtest(
-                positions_df=positions_df,
-                prices=data.prices,
-                initial_cash=self.initial_cash,
-                transaction_cost=self.commission,
-                trade_start_date=trade_start_date,
-                trade_end_date=trade_end_date,
-            )
-            path_results_df = pd.DataFrame()
-            results["mode"] = "backtest"
-            results["equity_curve"] = {
-                ts.isoformat(): float(val) for ts, val in equity_curve.items()
-            }
+        modes = test_modes if test_modes is not None else _test_modes_from_config()
+        modes = list(dict.fromkeys(_coerce_test_mode(mode) for mode in modes))
 
-        results["strategy"] = strategy.name
-        results["initial_cash"] = self.initial_cash
-        results["ticker"] = self.ticker
-        results["trade_window_start"] = trade_start_date
-        results["trade_window_end"] = trade_end_date
+        default_ticker = strategy.default_ticker or ""
+        combined: dict[str, dict] = {}
 
-        if output_dir is not None:
-            self._write_portfolio_results(
-                results=results,
-                raw_signals_df=signals_df,
-                positions_df=positions_df,
-                trades_df=trades_df,
-                path_results_df=path_results_df,
-                output_dir=Path(output_dir),
-            )
+        for mode in modes:
+            if mode == "monte_carlo":
+                mc_cfg = _monte_carlo_config()
 
-        return results
+                signals_df, trades_df, path_results_df, results = _run_weight_monte_carlo(
+                    strategy=strategy,
+                    data=data,
+                    initial_cash=self.initial_cash,
+                    transaction_cost=self.commission,
+                    default_ticker=default_ticker,
+                    mc_cfg=mc_cfg,
+                    trade_start_date=trade_start_date,
+                    trade_end_date=trade_end_date,
+                )
 
+                positions_df = _coerce_position_frame(
+                    signals_df,
+                    default_ticker=default_ticker,
+                )
+
+                results["mode"] = "monte_carlo"
+
+            else:
+                signals_df = strategy.generate_signals(data)
+
+                positions_df = _coerce_position_frame(
+                    signals_df,
+                    default_ticker=default_ticker,
+                )
+
+                trades_df, results, equity_curve = _run_weight_backtest(
+                    positions_df=positions_df,
+                    prices=data.prices,
+                    initial_cash=self.initial_cash,
+                    transaction_cost=self.commission,
+                    trade_start_date=trade_start_date,
+                    trade_end_date=trade_end_date,
+                )
+
+                path_results_df = pd.DataFrame()
+
+                results["mode"] = "backtest"
+                results["equity_curve"] = {
+                    ts.isoformat(): float(val)
+                    for ts, val in equity_curve.items()
+                }
+
+            results["strategy"] = strategy.name
+            results["initial_cash"] = self.initial_cash
+            results["ticker"] = default_ticker
+            results["trade_window_start"] = trade_start_date
+            results["trade_window_end"] = trade_end_date
+
+            combined[mode] = results
+
+            if output_dir is not None:
+                self._write_portfolio_results(
+                    results=results,
+                    raw_signals_df=signals_df,
+                    positions_df=positions_df,
+                    trades_df=trades_df,
+                    path_results_df=path_results_df,
+                    output_dir=Path(output_dir),
+                )
+
+        return combined
+    
     def run_forecastex(
         self,
         strategy: BaseStrategy,

@@ -308,8 +308,8 @@ trading:
     refresh: false
 
   strategies:
-    krish:
-      class: "KrishTradeStrategy"
+    consumer_regime:
+      class: "ConsumerRegimeStrategy"
       # Maps role names the strategy expects → panel names from data.panels.
       # Role names are strategy-defined; check the strategy class for required_inputs.
       forecast_panels:

@@ -18,14 +18,92 @@ from src.trading.strategy import BaseStrategy, StrategyData, register_strategy
 
 @register_strategy
 class PCEPairsStrategy(BaseStrategy):
+    DISPLAY_NAME = "PCE Macro-Conditioned Pairs Strategy"
+    DESCRIPTION = (
+        "Trades a dollar-neutral pair using PCE forecast regimes and "
+        "daily spread z-score mean reversion."
+    )
+    REQUIRED_INPUTS_SCHEMA = ["forecasts", "prices"]
+
+    PARAMETER_SCHEMA = [
+        {
+            "name": "ticker_a",
+            "label": "Ticker A",
+            "type": "ticker",
+            "default": "WMT",
+            "required": True,
+        },
+        {
+            "name": "ticker_b",
+            "label": "Ticker B",
+            "type": "ticker",
+            "default": "TGT",
+            "required": True,
+        },
+        {
+            "name": "macro_threshold",
+            "label": "Macro Threshold",
+            "type": "number",
+            "default": 0.0,
+            "required": True,
+            "step": 0.1,
+        },
+        {
+            "name": "zscore_window",
+            "label": "Z-Score Window",
+            "type": "number",
+            "default": 20,
+            "required": True,
+            "step": 1,
+        },
+        {
+            "name": "entry_z",
+            "label": "Entry Z-Score",
+            "type": "number",
+            "default": 1.5,
+            "required": True,
+            "step": 0.1,
+        },
+        {
+            "name": "exit_z",
+            "label": "Exit Z-Score",
+            "type": "number",
+            "default": 0.8,
+            "required": True,
+            "step": 0.1,
+        },
+        {
+            "name": "position_size",
+            "label": "Position Size",
+            "type": "number",
+            "default": 0.5,
+            "required": True,
+            "step": 0.05,
+        },
+    ]
+
+    UI_SPEC = {
+        "market_type": "securities",
+        "plots": [
+            "forecast_vs_actual",
+            "forecast_error",
+            "equity_curve",
+            "cumulative_return_curve",
+            "drawdown_curve",
+            "period_return_curve",
+            "weights_curve",
+            "confidence_curve",
+        ],
+    }
+
     def __init__(
         self,
-        ticker_a: str = "XLY",
-        ticker_b: str = "XLP",
+        ticker_a: str = "WMT",
+        ticker_b: str = "TGT",
         macro_threshold: float = 0.0,
         zscore_window: int = 20,
         entry_z: float = 1.5,
-        exit_z: float = 0.5,
+        exit_z: float = 0.8,
         position_size: float = 0.5,
         **params,
     ):
@@ -185,8 +263,14 @@ class PCEPairsStrategy(BaseStrategy):
             for i in range(len(work))
         ]
 
+        confidence = np.minimum(
+            np.abs(work["z_score"].values) / max(abs(self.entry_z), 1e-12),
+            1.0,
+        )
+
         return self._make_weight_frame(
             index=work.index,
             weights={self.ticker_a: weight_a, self.ticker_b: weight_b},
+            confidence=confidence,
             metadata=metadata,
         )

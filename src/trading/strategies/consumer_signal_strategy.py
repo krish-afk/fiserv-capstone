@@ -14,9 +14,9 @@ from src.trading.strategy import BaseStrategy, StrategyData, register_strategy
 
 
 @register_strategy
-class KrishTradeStrategy(BaseStrategy):
+class ConsumerRegimeStrategy(BaseStrategy):
 
-    DISPLAY_NAME = "Krish Trade Strategy"
+    DISPLAY_NAME = "Consumer Regime Signal Strategy"
     DESCRIPTION = "Allocates between risk-on and defensive consumer names using combined PCE + MRTS forecasts."
     REQUIRED_INPUTS_SCHEMA = ["forecasts", "mrts"]
     PARAMETER_SCHEMA = [

@@ -368,29 +368,30 @@ trading:
       forecastex:
         enabled: false
       params:
-        trend_window: 6
-        z_window: 12
-        uncertainty_window: 6
-        risk_on_gap_z: 0.4
-        risk_on_delta_z: 0.2
-        defensive_gap_z: 0.2
-        duration_gap_z: -0.1
-        falling_delta_z: -0.6
-        uncertainty_ratio_thresh: 1.35
-        ambiguous_band: 0.2
+        trend_window: 3
+        z_window: 4
+        uncertainty_window: 3
+        risk_on_gap_z: 0.1
+        risk_on_delta_z: 0.0
+        defensive_gap_z: 0.0
+        duration_gap_z: -0.05
+        falling_delta_z: -0.2
+        ambiguous_band: 0.05
+        uncertainty_ratio_thresh: 2.0
         top_k: 1
         min_abs_mom: 0.0
         use_ma_filter: false
         target_allocation: 1.0
-        score_w_3m: 0.55
-        score_w_6m: 0.30
-        score_w_12m: 0.15
-        score_w_vol: 0.25
-        fallback_etf: SHY
-        risk_on_basket: [QQQ, SPY, IWM, SMH, XLY, XLI, HYG]
-        defensive_basket: [XLV, XLP, XLU, USMV, QUAL, GLD]
-        duration_basket: [TLT, IEF, LQD, QQQ, XLK]
-        uncertain_basket: [SHY, BIL, IEF, GLD]
+        sscore_w_3m: 1.0
+        score_w_6m: 0.0
+        score_w_12m: 0.0
+        score_w_vol: 0.15
+        fallback_etf: QUAL
+        risk_on_basket: [XLY, XRT, PEJ, AMZN, BKNG, TSLA]
+        defensive_basket: [XLP, XLV, XLU, USMV, QUAL]
+        duration_basket: [TLT, IEF, XLP, XLU, XLV]
+        uncertain_basket: [QUAL, USMV, XLV, XLP, GLD]
+        top_k: 2
   
     pce_pairs:
       class: "PCEPairsStrategy"

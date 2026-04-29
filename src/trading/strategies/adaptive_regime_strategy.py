@@ -26,37 +26,6 @@ class AdaptiveRegimeStrategy(BaseStrategy):
     run inside the team's trading pipeline.
     """
 
-    DISPLAY_NAME = "Adaptive Regime ETF Rotation"
-    DESCRIPTION = "Uses forecast regimes plus ETF momentum ranking to rotate across risk-on, defensive, duration, and uncertain baskets."
-    REQUIRED_INPUTS_SCHEMA = ["forecasts", "prices"]
-
-    PARAMETER_SCHEMA = [
-        {"name": "trend_window", "label": "Trend Window", "type": "number", "default": 6, "required": True, "step": 1},
-        {"name": "z_window", "label": "Z-Score Window", "type": "number", "default": 12, "required": True, "step": 1},
-        {"name": "uncertainty_window", "label": "Uncertainty Window", "type": "number", "default": 6, "required": True, "step": 1},
-        {"name": "target_allocation", "label": "Target Allocation", "type": "number", "default": 1.0, "required": True, "step": 0.05},
-        {"name": "top_k", "label": "Top K ETFs", "type": "number", "default": 1, "required": True, "step": 1},
-        {"name": "fallback_etf", "label": "Fallback ETF", "type": "ticker", "default": "SHY", "required": True},
-        {"name": "risk_on_basket", "label": "Risk-On Basket", "type": "ticker_list", "default": ["QQQ", "SPY", "IWM", "SMH", "XLY", "XLI", "HYG"], "required": True},
-        {"name": "defensive_basket", "label": "Defensive Basket", "type": "ticker_list", "default": ["XLV", "XLP", "XLU", "USMV", "QUAL", "GLD"], "required": True},
-        {"name": "duration_basket", "label": "Duration Basket", "type": "ticker_list", "default": ["TLT", "IEF", "LQD", "QQQ", "XLK"], "required": True},
-        {"name": "uncertain_basket", "label": "Uncertain Basket", "type": "ticker_list", "default": ["SHY", "BIL", "IEF", "GLD"], "required": True},
-    ]
-
-    UI_SPEC = {
-        "market_type": "securities",
-        "plots": [
-            "forecast_vs_actual",
-            "forecast_error",
-            "equity_curve",
-            "cumulative_return_curve",
-            "drawdown_curve",
-            "period_return_curve",
-            "weights_curve",
-            "confidence_curve",
-        ],
-    }
-
     def __init__(
         self,
         trend_window: int = 6,
@@ -132,10 +101,10 @@ class AdaptiveRegimeStrategy(BaseStrategy):
         self.fallback_etf = fallback_etf.upper()
 
         self.baskets = {
-            "RISK_ON": [t.upper() for t in (risk_on_basket or ["QQQ", "SPY", "IWM", "SMH", "XLY", "XLI", "HYG"])],
-            "DEFENSIVE": [t.upper() for t in (defensive_basket or ["XLV", "XLP", "XLU", "USMV", "QUAL", "GLD"])],
-            "DURATION": [t.upper() for t in (duration_basket or ["TLT", "IEF", "LQD", "QQQ", "XLK"])],
-            "UNCERTAIN": [t.upper() for t in (uncertain_basket or ["SHY", "BIL", "IEF", "GLD"])],
+            "RISK_ON": [t.upper() for t in (risk_on_basket or ["XLY", "XRT", "PEJ", "AMZN", "BKNG", "TSLA"])],
+            "DEFENSIVE": [t.upper() for t in (defensive_basket or ["XLP", "XLV", "XLU", "USMV", "QUAL"])],
+            "DURATION": [t.upper() for t in (duration_basket or ["TLT", "IEF", "XLP", "XLU", "XLV"])],
+            "UNCERTAIN": [t.upper() for t in (uncertain_basket or ["QUAL", "USMV", "XLV", "XLP", "GLD"])],
         }
 
     @property
@@ -164,8 +133,8 @@ class AdaptiveRegimeStrategy(BaseStrategy):
         delta_z = row.get("delta_z", np.nan)
         uncertainty_ratio = row.get("uncertainty_ratio", np.nan)
 
-        if pd.notna(uncertainty_ratio) and uncertainty_ratio > self.uncertainty_ratio_thresh:
-            return "UNCERTAIN"
+        # if pd.notna(uncertainty_ratio) and uncertainty_ratio > self.uncertainty_ratio_thresh:
+        #     return "UNCERTAIN"
 
         if pd.notna(gap_z) and pd.notna(delta_z):
             if gap_z >= self.risk_on_gap_z and delta_z >= self.risk_on_delta_z:
@@ -211,7 +180,7 @@ class AdaptiveRegimeStrategy(BaseStrategy):
 
         for ticker in basket:
             feat = asset_features[ticker].loc[row_idx]
-            if feat[["mom_3m", "mom_6m", "mom_12m", "vol_6m"]].isna().any():
+            if feat[["mom_3m", "vol_6m"]].isna().any():
                 continue
             if abs(float(feat["mom_3m"])) < self.min_abs_mom:
                 continue
@@ -220,22 +189,25 @@ class AdaptiveRegimeStrategy(BaseStrategy):
 
             score = (
                 self.score_w_3m * float(feat["mom_3m"])
-                + self.score_w_6m * float(feat["mom_6m"])
-                + self.score_w_12m * float(feat["mom_12m"])
                 - self.score_w_vol * float(feat["vol_6m"])
             )
             scores.append((ticker, score))
 
         if not scores:
+            print(f"[DEBUG] {row_idx.date()} | regime={regime} | no valid scores -> fallback {self.fallback_etf}")
             return [self.fallback_etf]
 
         scores.sort(key=lambda x: x[1], reverse=True)
+        print(f"[DEBUG] {row_idx.date()} | regime={regime} | top candidates={scores[:3]}")
         return [t for t, _ in scores[: self.top_k]]
 
     def generate_signals(self, data: StrategyData) -> pd.DataFrame:
         data.validate(self.required_inputs)
         forecasts = self._coerce_forecast_index(data.forecasts).copy()
         forecasts = forecasts.sort_index()
+
+        print("\n[DEBUG] Forecast rows:", len(forecasts))
+        print("[DEBUG] Forecast date range:", forecasts.index.min(), "to", forecasts.index.max())
 
         if "y_pred" not in forecasts.columns:
             raise ValueError("Forecast panel must include a 'y_pred' column.")
@@ -307,4 +279,13 @@ class AdaptiveRegimeStrategy(BaseStrategy):
         )
         out["macro_regime"] = forecasts["macro_regime"].values
         out["selected_asset"] = selected_primary
+
+        print("\n[DEBUG] Selected asset counts:")
+        print(pd.Series(selected_primary).value_counts(dropna=False))
+
+        print("\n[DEBUG] Final decisions:")
+        print(pd.DataFrame({
+            "regime": forecasts["macro_regime"].values,
+            "selected_asset": selected_primary,
+        }, index=forecasts.index))
         return out

@@ -196,6 +196,16 @@ def run_cleaning(raw_dfs: dict[str, pd.DataFrame]) -> tuple[pd.DataFrame, pd.Dat
     # Separate FSBI before master build
     fsbi_long = aligned.pop("fsbi")
 
+    # ==========================================
+    # SA ENFORCEMENT: Drop NSA columns from FSBI
+    # ==========================================
+    # Find any column containing "nsa" (case-insensitive) and drop it 
+    # to ensure models only train on Seasonally Adjusted data.
+    nsa_cols = [c for c in fsbi_long.columns if "nsa" in c.lower()]
+    if nsa_cols:
+        print(f"\n[STEP 2.5] Enforcing SA Data: Dropping NSA columns from FSBI: {nsa_cols}")
+        fsbi_long = fsbi_long.drop(columns=nsa_cols)
+
     # Build master with row dropping
     print("\n[STEP 3] Building master dataset...")
     master = build_master(aligned)

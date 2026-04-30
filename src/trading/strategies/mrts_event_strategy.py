@@ -88,8 +88,6 @@ class MRTSForecastMarketStrategy(BaseStrategy):
 
     @property
     def tickers(self) -> list[str]:
-        # Returning an empty list prevents Will's pipeline from trying to 
-        # download YFinance equity data for our Prediction Market.
         return []
 
     def generate_signals(self, data: StrategyData) -> pd.DataFrame:
@@ -109,38 +107,65 @@ class MRTSForecastMarketStrategy(BaseStrategy):
         bbg_df = bbg_df.sort_index(ascending=True)
         bbg_df = bbg_df.reindex(forecast_df.index, method='ffill')
         
-        # Drop rows that don't overlap and sync indices
+        # Drop rows that don't overlap
         bbg_df = bbg_df.dropna(subset=['PX_LAST', 'BN_SURVEY_MEDIAN'])
         forecast_df = forecast_df.loc[bbg_df.index]
 
         # ==========================================
-        # TRANSLATE ABSOLUTE TO MoM % CHANGE
+        # 1. DYNAMIC TARGET SCALING
         # ==========================================
-        # Grab the previous month's actual reported value
-        forecast_df['prev_y_true'] = forecast_df['y_true'].shift(1)
+        median_val = forecast_df['y_true'].abs().median()
         
-        # Formula: ((Prediction / Previous Actual) - 1) * 100
-        forecast_df['pred_mom_pct'] = ((forecast_df['y_pred'] / forecast_df['prev_y_true']) - 1.0) * 100.0
-        
-        # The first row won't have a previous month, so we must drop it
-        forecast_df = forecast_df.dropna(subset=['pred_mom_pct'])
+        if median_val > 100.0:
+            forecast_df['prev_y_true'] = forecast_df['y_true'].shift(1)
+            forecast_df['pred_mom_pct'] = ((forecast_df['y_pred'] / forecast_df['prev_y_true']) - 1.0) * 100.0
+            forecast_df['actual_mom_pct'] = ((forecast_df['y_true'] / forecast_df['prev_y_true']) - 1.0) * 100.0
+        elif median_val < 1.0:
+            forecast_df['pred_mom_pct'] = forecast_df['y_pred'] * 100.0
+            forecast_df['actual_mom_pct'] = forecast_df['y_true'] * 100.0
+        else:
+            forecast_df['pred_mom_pct'] = forecast_df['y_pred']
+            forecast_df['actual_mom_pct'] = forecast_df['y_true']
 
-        # Merge for signal generation
+        forecast_df = forecast_df.dropna(subset=['pred_mom_pct', 'actual_mom_pct'])
+            
         merged = forecast_df.join(bbg_df, how="inner")
+
+        # ==========================================
+        # 3. Z-SCORE BLOWOUT PREVENTER
+        # ==========================================
+        true_rmse = np.sqrt(((merged['pred_mom_pct'] - merged['actual_mom_pct']) ** 2).mean())
+        
+        # If the user's config RMSE is dangerously tight (< half of reality), it will cause a blowout.
+        # We override it with the true error to safely price the options.
+        active_rmse = true_rmse if (true_rmse > 0 and self.model_rmse < (true_rmse / 2)) else self.model_rmse
+
+        print("\n" + "▼"*65)
+        print("🔍 PREDICTION MARKET MATH DIAGNOSTIC")
+        print(f"Configured RMSE in yaml:  {self.model_rmse}")
+        print(f"True Historical RMSE:     {true_rmse:.4f}")
+        print(f"Active Pricing RMSE:      {active_rmse:.4f} (Used for Z-Scores)")
+        print("-" * 65)
+        print("Date       | Pred (%) | Strike (%) | Z-Score | Prob Beat | Edge")
+        print("-" * 65)
 
         signals = []
         confidences = []
         metadata = []
 
-        for date, row in merged.iterrows():
-            # Use our new PERCENTAGE prediction for the math!
+        for idx, (date, row) in enumerate(merged.iterrows()):
             y_pred_pct = float(row["pred_mom_pct"]) 
             strike_median = float(row["BN_SURVEY_MEDIAN"])
             actual_release = float(row["PX_LAST"])
 
-            # Now the loc (prediction) and strike are on the exact same scale
-            prob_beat_strike = 1.0 - norm.cdf(strike_median, loc=y_pred_pct, scale=self.model_rmse)
+            # Statistically sound Z-Score math
+            z_score = (strike_median - y_pred_pct) / active_rmse
+            prob_beat_strike = 1.0 - norm.cdf(z_score)
             calculated_edge = prob_beat_strike - self.contract_price
+
+            # Print the X-Ray Diagnostic for the first 5 trades
+            if idx < 5: 
+                print(f"{date.date()} | {y_pred_pct:8.3f} | {strike_median:10.3f} | {z_score:7.2f} | {prob_beat_strike:9.3f} | {calculated_edge:5.3f}")
 
             if calculated_edge > self.edge_threshold:
                 trade_signal = 1.0
@@ -153,13 +178,15 @@ class MRTSForecastMarketStrategy(BaseStrategy):
             confidences.append(abs(calculated_edge))
             
             metadata.append({
-                "y_pred_abs": round(float(row["y_pred"]), 2), # Keep absolute for records
-                "y_pred_pct": round(y_pred_pct, 4),           # The traded %
+                "y_pred_abs": round(float(row["y_pred"]), 2), 
+                "y_pred_pct": round(y_pred_pct, 4),           
                 "bbg_strike": strike_median,
                 "bbg_actual": actual_release,
                 "model_prob": round(prob_beat_strike, 4),
                 "edge": round(calculated_edge, 4)
             })
+
+        print("▲"*65 + "\n")
 
         return self._make_signals(
             index=merged.index,

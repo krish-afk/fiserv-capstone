@@ -114,8 +114,6 @@ def _plot_universal_performance(equity_csv: Path, trades_csv: Path, json_path: P
         df_trades['entry_date'] = pd.to_datetime(df_trades['entry_date'])
         df_trades['exit_date'] = pd.to_datetime(df_trades['exit_date'])
         
-        # The ETF backtester doesn't output the starting $100k point, causing the "offset" illusion.
-        # We manually insert it here at the very first trade's entry date.
         if not df_trades.empty:
             first_entry = df_trades['entry_date'].min()
             if first_entry not in df_eq.index or first_entry < df_eq.index.min():
@@ -134,12 +132,40 @@ def _plot_universal_performance(equity_csv: Path, trades_csv: Path, json_path: P
     df_eq['Peak'] = df_eq['Cumulative_Real'].cummax()
     df_eq['Drawdown'] = (df_eq['Cumulative_Real'] - df_eq['Peak']) / df_eq['Peak'] * 100
 
+    # --- FETCH S&P 500 BASELINE DYNAMICALLY ---
+    try:
+        import yfinance as yf
+        start_str = df_eq.index.min().strftime('%Y-%m-%d')
+        end_str = (df_eq.index.max() + pd.Timedelta(days=5)).strftime('%Y-%m-%d') # Cushion to ensure final day is captured
+        
+        spy = yf.download("SPY", start=start_str, end=end_str, progress=False)
+        if not spy.empty:
+            # Handle yfinance multi-index vs single-index output variations
+            if isinstance(spy.columns, pd.MultiIndex):
+                spy_close = spy["Close"]["SPY"]
+            else:
+                spy_close = spy["Close"]
+            
+            # Align exact trading days, backfilling the first day if it lands on a weekend
+            spy_aligned = spy_close.reindex(df_eq.index, method="ffill").bfill()
+            
+            # Normalize SPY value to match the initial capital amount
+            df_eq['SPY_Baseline'] = (spy_aligned / spy_aligned.iloc[0]) * initial_capital
+    except Exception as e:
+        print(f"[PLOT] Warning: Could not fetch SPY baseline: {e}")
+    # ------------------------------------------
+
     fig_perf = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1, row_heights=[0.7, 0.3])
     
     if 'Cumulative_Pure' in df_eq.columns:
         fig_perf.add_trace(go.Scatter(x=df_eq.index, y=df_eq['Cumulative_Pure'], mode='lines', name='Pure Portfolio (0-Fee)', line=dict(color='green', width=2)), row=1, col=1)
+    
     fig_perf.add_trace(go.Scatter(x=df_eq.index, y=df_eq['Cumulative_Real'], mode='lines', name='Realistic Portfolio (IBKR fee)', line=dict(color='black', width=2, dash='dash')), row=1, col=1)
     
+    # Add the SPY trace if the fetch was successful
+    if 'SPY_Baseline' in df_eq.columns:
+        fig_perf.add_trace(go.Scatter(x=df_eq.index, y=df_eq['SPY_Baseline'], mode='lines', name='S&P 500 (SPY)', line=dict(color='blue', width=2, dash='dot')), row=1, col=1)
+
     fig_perf.add_trace(go.Scatter(x=df_eq.index, y=df_eq['Drawdown'], mode='lines', fill='tozeroy', name='Drawdown (%)', line=dict(color='red', width=1), fillcolor='rgba(255,0,0,0.2)'), row=2, col=1)
     fig_perf.update_layout(title=f"Trading Performance & Drawdown ({strategy_name})", template="plotly_white", hovermode="x unified", height=700)
     fig_perf.write_html(str(plot_dir / "dash_trading_performance.html"))
@@ -148,7 +174,6 @@ def _plot_universal_performance(equity_csv: Path, trades_csv: Path, json_path: P
     df_monthly = df_eq.resample('ME').last().ffill()
     df_monthly['Ret'] = df_monthly['Cumulative_Real'].pct_change().fillna(0)
     
-    # FIX: min_periods=2 prevents NaNs when the test window is shorter than 12 months
     ann_ret = df_monthly['Ret'].rolling(12, min_periods=2).mean() * 12
     ann_vol = df_monthly['Ret'].rolling(12, min_periods=2).std() * np.sqrt(12)
     sharpe = ann_ret / (ann_vol + 1e-6)

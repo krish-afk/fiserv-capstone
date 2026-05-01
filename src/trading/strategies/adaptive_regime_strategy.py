@@ -26,27 +26,58 @@ class AdaptiveRegimeStrategy(BaseStrategy):
     run inside the team's trading pipeline.
     """
 
+    DISPLAY_NAME = "Adaptive Regime ETF Rotation"
+    DESCRIPTION = "Uses forecast regimes plus ETF momentum ranking to rotate across risk-on, defensive, duration, and uncertain baskets."
+    REQUIRED_INPUTS_SCHEMA = ["forecasts", "prices"]
+
+    PARAMETER_SCHEMA = [
+        {"name": "trend_window", "label": "Trend Window", "type": "number", "default": 3, "required": True, "step": 1},
+        {"name": "z_window", "label": "Z-Score Window", "type": "number", "default": 4, "required": True, "step": 1},
+        {"name": "uncertainty_window", "label": "Uncertainty Window", "type": "number", "default": 3, "required": True, "step": 1},
+        {"name": "target_allocation", "label": "Target Allocation", "type": "number", "default": 1.0, "required": True, "step": 0.05},
+        {"name": "top_k", "label": "Top K ETFs", "type": "number", "default": 2, "required": True, "step": 1},
+        {"name": "fallback_etf", "label": "Fallback ETF", "type": "ticker", "default": "SHY", "required": True},
+        {"name": "risk_on_basket", "label": "Risk-On Basket", "type": "ticker_list", "default": ["XLY", "XRT", "PEJ", "AMZN", "BKNG", "TSLA"], "required": True},
+        {"name": "defensive_basket", "label": "Defensive Basket", "type": "ticker_list", "default": ["XLP", "XLV", "XLU", "USMV", "QUAL"], "required": True},
+        {"name": "duration_basket", "label": "Duration Basket", "type": "ticker_list", "default": ["TLT", "IEF", "XLP", "XLU", "XLV"], "required": True},
+        {"name": "uncertain_basket", "label": "Uncertain Basket", "type": "ticker_list", "default": ["QUAL", "USMV", "XLV", "XLP", "GLD"], "required": True},
+    ]
+
+    UI_SPEC = {
+        "market_type": "securities",
+        "plots": [
+            "forecast_vs_actual",
+            "forecast_error",
+            "equity_curve",
+            "cumulative_return_curve",
+            "drawdown_curve",
+            "period_return_curve",
+            "weights_curve",
+            "confidence_curve",
+        ],
+    }
+
     def __init__(
         self,
         trend_window: int = 6,
         z_window: int = 12,
         uncertainty_window: int = 6,
         risk_on_gap_z: float = 0.4,
-        risk_on_delta_z: float = 0.2,
-        defensive_gap_z: float = 0.2,
-        duration_gap_z: float = -0.1,
-        falling_delta_z: float = -0.6,
-        uncertainty_ratio_thresh: float = 1.35,
-        ambiguous_band: float = 0.2,
-        top_k: int = 1,
+        risk_on_delta_z: float = 0.0,
+        defensive_gap_z: float = 0.0,
+        duration_gap_z: float = -0.05,
+        falling_delta_z: float = -0.2,
+        uncertainty_ratio_thresh: float = 2.0,
+        ambiguous_band: float = 0.05,
+        top_k: int = 2,
         min_abs_mom: float = 0.0,
         use_ma_filter: bool = False,
         target_allocation: float = 1.0,
-        score_w_3m: float = 0.55,
-        score_w_6m: float = 0.30,
-        score_w_12m: float = 0.15,
-        score_w_vol: float = 0.25,
-        fallback_etf: str = "SHY",
+        score_w_3m: float = 1.0,
+        score_w_6m: float = 0.0,
+        score_w_12m: float = 0.0,
+        score_w_vol: float = 0.15,
+        fallback_etf: str = "QUAL",
         risk_on_basket: list[str] | None = None,
         defensive_basket: list[str] | None = None,
         duration_basket: list[str] | None = None,

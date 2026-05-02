@@ -160,10 +160,14 @@ def build_top_models_table(panel_name: str, rows: list[dict]) -> dict:
         columns=[
             {"key": "model_name", "label": "Model"},
             {"key": "feature_set", "label": "Feature Set"},
+
+            # Primary ranking metrics first
+            {"key": "dir_acc", "label": "Directional Acc"},
+            {"key": "mape", "label": "MAPE"},
+
+            # Secondary diagnostics
             {"key": "rmse", "label": "RMSE"},
             {"key": "mae", "label": "MAE"},
-            {"key": "mape", "label": "MAPE"},
-            {"key": "dir_acc", "label": "Directional Acc"},
             {"key": "r2", "label": "R²"},
         ],
         rows=rows,
@@ -179,10 +183,14 @@ def build_metrics_table(rows: list[dict]) -> dict:
             {"key": "panel_name", "label": "Panel"},
             {"key": "model_name", "label": "Model"},
             {"key": "feature_set", "label": "Feature Set"},
+
+            # Primary model-selection metrics first
+            {"key": "dir_acc", "label": "Directional Acc"},
+            {"key": "mape", "label": "MAPE"},
+
+            # Secondary diagnostics
             {"key": "rmse", "label": "RMSE"},
             {"key": "mae", "label": "MAE"},
-            {"key": "mape", "label": "MAPE"},
-            {"key": "dir_acc", "label": "Directional Acc"},
             {"key": "r2", "label": "R²"},
         ],
         rows=rows,

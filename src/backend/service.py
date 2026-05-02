@@ -140,21 +140,69 @@ def _build_panels_data(cfg: dict) -> dict[str, tuple[pd.Series, pd.DataFrame]]:
 
     return panels_data
 
+def _rank_metrics_df(metrics_df: pd.DataFrame, rank_metric: str = "directional_accuracy_mape") -> pd.DataFrame:
+    """
+    Ranking logic for dashboard model selection.
+
+    Default ranking:
+      1. Higher directional accuracy is better.
+      2. Lower MAPE is better.
+      3. Lower RMSE is better.
+      4. Lower MAE is better.
+    """
+    if metrics_df is None or metrics_df.empty:
+        return pd.DataFrame()
+
+    df = metrics_df.copy()
+
+    for col in ["dir_acc", "mape", "rmse", "mae", "r2"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    composite_metrics = {
+        "directional_accuracy_mape",
+        "dir_acc_mape",
+        "directional_accuracy",
+        "dir_acc",
+    }
+
+    if rank_metric in composite_metrics:
+        required = [c for c in ["dir_acc", "mape"] if c in df.columns]
+        if required:
+            df = df.dropna(subset=required)
+
+        sort_cols = [c for c in ["dir_acc", "mape", "rmse", "mae"] if c in df.columns]
+        ascending = [False if c == "dir_acc" else True for c in sort_cols]
+
+        if not sort_cols:
+            return df
+
+        return df.sort_values(sort_cols, ascending=ascending, na_position="last")
+
+    metric = rank_metric if rank_metric in df.columns else "rmse"
+    df = df.dropna(subset=[metric])
+
+    # Metrics where higher is better.
+    higher_is_better = {"dir_acc", "directional_accuracy", "r2"}
+    ascending = metric not in higher_is_better
+
+    return df.sort_values(metric, ascending=ascending, na_position="last")
 
 def _best_row(metrics_df: pd.DataFrame, panel_name: str, rank_metric: str) -> Optional[pd.Series]:
     subset = metrics_df.copy()
+
     if "panel_name" in subset.columns:
         subset = subset[subset["panel_name"] == panel_name].copy()
 
     if subset.empty:
         return None
 
-    metric = rank_metric if rank_metric in subset.columns else "rmse"
-    subset = subset.dropna(subset=[metric])
-    if subset.empty:
+    ranked = _rank_metrics_df(subset, rank_metric=rank_metric)
+
+    if ranked.empty:
         return None
 
-    return subset.nsmallest(1, metric).iloc[0]
+    return ranked.iloc[0]
 
 def _top_model_metric_bar_payload(panel_name: str, rows: list[dict], metric: str = "rmse") -> dict:
     chart_rows = [
@@ -407,18 +455,12 @@ def _forecast_plot_payload(
 def _top_models_by_panel(
     metrics_df: pd.DataFrame,
     top_k: int = 5,
-    rank_metric: str = "rmse",
+    rank_metric: str = "directional_accuracy_mape",
 ) -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = {}
-    metric = rank_metric if rank_metric in metrics_df.columns else "rmse"
 
     for panel_name, panel_df in metrics_df.groupby("panel_name"):
-        ranked = (
-            panel_df.dropna(subset=[metric])
-            .sort_values(metric, ascending=True)
-            .head(top_k)
-            .copy()
-        )
+        ranked = _rank_metrics_df(panel_df, rank_metric=rank_metric).head(top_k).copy()
         out[panel_name] = _records(ranked)
 
     return out
@@ -626,7 +668,7 @@ def get_dashboard_options(cfg: Optional[dict] = None) -> dict:
         "trading_modes": ["backtest", "monte_carlo"],
         "defaults": {
             "panels": list(cfg["experiment"]["panels"]),
-            "ranking_metric": "mape",
+            "ranking_metric": "directional_accuracy_mape",
             "top_k": 5,
             "run_trading": True,
         },
@@ -647,7 +689,7 @@ def run_dashboard_pipeline(payload: dict, cfg: Optional[dict] = None) -> dict:
 
     horizon = int(cfg["forecasting"]["horizons"][0])
     min_train_size = int(cfg["forecasting"]["walk_forward_min_train"])
-    rank_metric = str(payload.get("ranking_metric", "mape"))
+    rank_metric = str(payload.get("ranking_metric", "directional_accuracy_mape"))
     top_k = int(payload.get("top_k", 5))
 
     exp_result = run_experiment_with_details(
@@ -664,6 +706,13 @@ def run_dashboard_pipeline(payload: dict, cfg: Optional[dict] = None) -> dict:
         top_k=top_k,
         rank_metric=rank_metric,
     )
+
+    top_model_chart_metric = "dir_acc" if rank_metric in {
+        "directional_accuracy_mape",
+        "dir_acc_mape",
+        "directional_accuracy",
+        "dir_acc",
+    } else rank_metric
 
     forecasting = {
         "metrics_table": _records(metrics_df),
@@ -691,7 +740,7 @@ def run_dashboard_pipeline(payload: dict, cfg: Optional[dict] = None) -> dict:
                 panel_name: _top_model_metric_bar_payload(
                     panel_name=panel_name,
                     rows=rows,
-                    metric=rank_metric,
+                    metric=top_model_chart_metric,
                 )
                 for panel_name, rows in top_models_by_panel.items()
             },

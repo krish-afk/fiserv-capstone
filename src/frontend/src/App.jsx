@@ -199,7 +199,7 @@ function buildDefaultStrategyParams(strategy) {
       panels: defaults.panels || [],
       models: [],
       feature_sets: [],
-      ranking_metric: defaults.ranking_metric || 'mape',
+      ranking_metric: defaults.ranking_metric || 'directional_accuracy_mape',
       top_k: defaults.top_k || 5,
       run_trading: defaults.run_trading ?? true,
       trading_mode: 'backtest',
@@ -1279,6 +1279,8 @@ export default function App() {
             value={form.ranking_metric}
             onChange={(e) => updateField('ranking_metric', e.target.value)}
             >
+            <option value="directional_accuracy_mape">Directional Accuracy + MAPE</option>
+            <option value="dir_acc">Directional Accuracy</option>
             <option value="mape">MAPE</option>
             <option value="rmse">RMSE</option>
             <option value="mae">MAE</option>

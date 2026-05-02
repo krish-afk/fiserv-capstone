@@ -199,12 +199,48 @@ def run_cleaning(raw_dfs: dict[str, pd.DataFrame]) -> tuple[pd.DataFrame, pd.Dat
     # ==========================================
     # SA ENFORCEMENT: Drop NSA columns from FSBI
     # ==========================================
-    # Find any column containing "nsa" (case-insensitive) and drop it 
-    # to ensure models only train on Seasonally Adjusted data.
-    nsa_cols = [c for c in fsbi_long.columns if "nsa" in c.lower()]
+    # Drop only true NSA metric columns.
+    # Do NOT use `"nsa" in column_name` because "transaction" / "transactional"
+    # contains the substring "nsa" and would incorrectly drop SA transaction columns.
+    fsbi_dim_cols = {"date", "Geo", "Sector Name", "Sub-Sector Name"}
+
+    nsa_cols = []
+    for c in fsbi_long.columns:
+        if c in fsbi_dim_cols:
+            continue
+
+        col = c.lower().strip()
+
+        is_nsa_col = (
+            col.endswith("_nsa")
+            or "_nsa_" in col
+            or col.endswith(" nsa")
+            or " - nsa" in col
+        )
+
+        if is_nsa_col:
+            nsa_cols.append(c)
+
     if nsa_cols:
         print(f"\n[STEP 2.5] Enforcing SA Data: Dropping NSA columns from FSBI: {nsa_cols}")
         fsbi_long = fsbi_long.drop(columns=nsa_cols)
+
+    # Make the FSBI transaction path explicit.
+    # These columns are required to reproduce the notebook-style FSBI feature set.
+    fsbi_dim_cols = ["date", "Geo", "Sector Name", "Sub-Sector Name"]
+    fsbi_metric_cols = [c for c in fsbi_long.columns if c not in fsbi_dim_cols]
+    tx_cols = [c for c in fsbi_metric_cols if "transaction" in c.lower()]
+
+    print(f"[INFO] FSBI SA metric columns after cleaning: {fsbi_metric_cols}")
+
+    if tx_cols:
+        print(f"[INFO] Preserving FSBI transaction columns: {tx_cols}")
+    else:
+        print(
+            "[WARN] No FSBI transaction columns found after cleaning. "
+            "The AR+FSBI feature set will not reproduce the notebook until "
+            "transaction_mom_sa is present in data/processed/fsbi_long.csv."
+        )
 
     # Build master with row dropping
     print("\n[STEP 3] Building master dataset...")

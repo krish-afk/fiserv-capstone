@@ -58,18 +58,126 @@ def load_uscb(path: Path = None) -> pd.DataFrame:
     df = df.set_index("date").sort_index()
     return df
 
+def _canonicalize_fsbi_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Standardize FSBI raw-column names so sales and transaction metrics survive
+    the raw -> processed -> panel pipeline with predictable feature names.
+
+    Raw FSBI exports may use labels like:
+      - "Sales MOM % - SA"
+      - "Real Sales MOM % - SA_normalized"
+      - "Transaction YOY %  - SA"
+
+    This function canonicalizes them to names like:
+      - sales_mom_sa
+      - transaction_mom_sa
+      - transactional_index_sa
+    """
+    df = df.copy()
+
+    # Clean header whitespace / hidden BOM characters.
+    df.columns = (
+        df.columns.astype(str)
+        .str.replace("\ufeff", "", regex=False)
+        .str.strip()
+        .str.replace(r"\s+", " ", regex=True)
+    )
+
+    aliases = {
+        # Dimension columns
+        "period": "Period",
+        "geo": "Geo",
+        "sector name": "Sector Name",
+        "sub-sector name": "Sub-Sector Name",
+        "sub sector name": "Sub-Sector Name",
+
+        # SA sales metrics
+        "sales index - sa": "sales_index_sa",
+        "real sales index - sa": "sales_index_sa",
+        "real sales index - sa_normalized": "sales_index_sa",
+        "real sales index - sa normalized": "sales_index_sa",
+
+        "sales mom % - sa": "sales_mom_sa",
+        "real sales mom % - sa": "sales_mom_sa",
+        "real sales mom % - sa_normalized": "sales_mom_sa",
+        "real sales mom % - sa normalized": "sales_mom_sa",
+
+        "sales yoy % - sa": "sales_yoy_sa",
+        "real sales yoy % - sa": "sales_yoy_sa",
+        "real sales yoy % - sa_normalized": "sales_yoy_sa",
+        "real sales yoy % - sa normalized": "sales_yoy_sa",
+
+        # SA transaction metrics
+        "transactional index - sa": "transactional_index_sa",
+        "transactional index - sa_normalized": "transactional_index_sa",
+        "transactional index - sa normalized": "transactional_index_sa",
+
+        "transaction mom % - sa": "transaction_mom_sa",
+        "transaction mom % - sa_normalized": "transaction_mom_sa",
+        "transaction mom % - sa normalized": "transaction_mom_sa",
+
+        "transaction yoy % - sa": "transaction_yoy_sa",
+        "transaction yoy % - sa_normalized": "transaction_yoy_sa",
+        "transaction yoy % - sa normalized": "transaction_yoy_sa",
+
+        # NSA sales metrics — clean.py will drop these later
+        "sales index - nsa": "sales_index_nsa",
+        "real sales index - nsa": "sales_index_nsa",
+        "real sales index - nsa_normalized": "sales_index_nsa",
+        "real sales index - nsa normalized": "sales_index_nsa",
+
+        "sales mom % - nsa": "sales_mom_nsa",
+        "real sales mom % - nsa": "sales_mom_nsa",
+        "real sales mom % - nsa_normalized": "sales_mom_nsa",
+        "real sales mom % - nsa normalized": "sales_mom_nsa",
+
+        "sales yoy % - nsa": "sales_yoy_nsa",
+        "real sales yoy % - nsa": "sales_yoy_nsa",
+        "real sales yoy % - nsa_normalized": "sales_yoy_nsa",
+        "real sales yoy % - nsa normalized": "sales_yoy_nsa",
+
+        # NSA transaction metrics — clean.py will drop these later
+        "transactional index - nsa": "transactional_index_nsa",
+        "transactional index - nsa_normalized": "transactional_index_nsa",
+        "transactional index - nsa normalized": "transactional_index_nsa",
+
+        "transaction mom % - nsa": "transaction_mom_nsa",
+        "transaction mom % - nsa_normalized": "transaction_mom_nsa",
+        "transaction mom % - nsa normalized": "transaction_mom_nsa",
+
+        "transaction yoy % - nsa": "transaction_yoy_nsa",
+        "transaction yoy % - nsa_normalized": "transaction_yoy_nsa",
+        "transaction yoy % - nsa normalized": "transaction_yoy_nsa",
+    }
+
+    rename = {}
+    for col in df.columns:
+        key = str(col).strip().lower()
+        key = " ".join(key.split())
+        if key in aliases:
+            rename[col] = aliases[key]
+
+    df = df.rename(columns=rename)
+
+    required_dims = ["Period", "Geo", "Sector Name", "Sub-Sector Name"]
+    missing_dims = [c for c in required_dims if c not in df.columns]
+    if missing_dims:
+        raise ValueError(f"FSBI raw file missing required columns: {missing_dims}")
+
+    # Force all metric columns numeric.
+    dim_cols = set(required_dims)
+    for col in [c for c in df.columns if c not in dim_cols]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df
 
 def load_fsbi(path: Path = None) -> pd.DataFrame:
     """
     Load FSBI data. Returns long-format DataFrame with columns:
         date | Geo | Sector Name | Sub-Sector Name | <metric columns>
 
-    FSBI has metro/city and sector dimensions — keep long format so that
-    clean.py can do group-level imputation before pivoting to wide format.
-
-    Raw FSBI uses 'Period' as an integer YYYYMMDD date (e.g., 20190101).
-    This function converts it to a proper datetime 'date' column.
-    Note: index is NOT set because dates repeat across (Geo, Sector) groups.
+    FSBI has geography and sector dimensions, so keep long format.
+    panel.py later filters and pivots it into model features.
     """
     if path is None:
         fsbi_filename = config["data"]["sources"]["fsbi"]["filename"]
@@ -79,14 +187,29 @@ def load_fsbi(path: Path = None) -> pd.DataFrame:
                 f"FSBI file not found at {path}. "
                 "Place the pre-downloaded fsbi_raw.csv in data/raw/ and re-run."
             )
+
     print(f"[INFO] Loading {path.name}")
     df = pd.read_csv(path)
+    df = _canonicalize_fsbi_columns(df)
 
-    # Parse Period (YYYYMMDD integer) into a proper datetime column
-    df["date"] = pd.to_datetime(df["Period"].astype(str), format="%Y%m%d", errors="coerce")
+    # Parse Period robustly.
+    # Supports both YYYYMMDD, e.g. 20190101, and ISO dates, e.g. 2019-01-01.
+    period = df["Period"].astype(str).str.strip()
+
+    parsed = pd.to_datetime(period, format="%Y%m%d", errors="coerce")
+    parsed = parsed.fillna(pd.to_datetime(period, errors="coerce"))
+
+    df["date"] = parsed
     df = df.drop(columns=["Period"])
     df = df.dropna(subset=["date"])
     df = df.sort_values("date").reset_index(drop=True)
+
+    transaction_cols = [c for c in df.columns if "transaction" in c.lower()]
+    if transaction_cols:
+        print(f"[INFO] FSBI transaction columns loaded: {transaction_cols}")
+    else:
+        print("[WARN] FSBI raw file loaded but no transaction columns were found")
+
     return df
 
 

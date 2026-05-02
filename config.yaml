@@ -11,6 +11,8 @@ paths:
 # Panels combine a target, transform, and geography/sector filters into a
 # named dataset; both the experiment and trading stages reference panels by name.
 # ---------------------------------------------------------------------------
+
+
 data:
   # All prediction targets; excluded from feature engineering (never lagged or rolled).
   # Which target an experiment uses is set per-panel (see panels.<name>.target).
@@ -119,9 +121,11 @@ data:
 # by name in the experiment grid to select inputs for each trial.
 # ---------------------------------------------------------------------------
 features:
+  target_lags: [1, 2, 3]
   lags: [1, 3, 6, 12]
   rolling_windows: [3, 6, 12]
   growth_rates: true
+
 
   # Named feature subsets referenced by the experiment grid; values are fnmatch
   # globs matched against post-build column names. An empty list signals X=None.
@@ -161,6 +165,22 @@ features:
       - "jolts_quits_rate_lag*"
       - "natural_gas_price_lag*"
       - "import_price_index_lag*"
+    pce_ar_fsbi_best_macro4:
+      - "pce_mom_lag1"
+      - "pce_mom_lag2"
+      - "pce_mom_lag3"
+
+      # FSBI block matching the notebook
+      - "fsbi_us_all_all_sales_mom_sa"
+      - "fsbi_us_all_all_transaction_mom_sa"
+      - "fsbi_us_all_all_sales_mom_sa_lag1"
+      - "fsbi_us_all_all_transaction_mom_sa_lag1"
+
+      # Four selected macro lag-1 variables
+      - "unemployment_rate_lag1"
+      - "crude_oil_wti_lag1"
+      - "credit_spread_baa_lag1"
+      - "treasury_10y_lag1"
 
 # ---------------------------------------------------------------------------
 # Transforms — scaling and differencing applied after feature construction,
@@ -241,11 +261,11 @@ experiment:
       enabled: true
       variants:
         - class: OLSForecaster
-          feature_sets: [fsbi_lags, macro_lags]
+          feature_sets: [fsbi_lags, macro_lags, pce_ar_fsbi_best_macro4]
         - class: RidgeForecaster
           param_grid:
             alpha: [0.01, 0.1, 1.0, 10.0, 100.0]
-          feature_sets: [fsbi_lags, macro_lags, fsbi_and_macro_lags, all_features]
+          feature_sets: [fsbi_lags, macro_lags, fsbi_and_macro_lags, all_features, pce_ar_fsbi_best_macro4]
         - class: LassoForecaster
           param_grid:
             alpha: [0.001, 0.01, 0.1, 1.0]

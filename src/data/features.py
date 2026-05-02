@@ -92,7 +92,6 @@ def build_all_features(df: pd.DataFrame) -> pd.DataFrame:
         df = build_rolling_features(df, col=col, windows=windows)
         df = build_growth_rate(df, col=col)
 
-    df = df.dropna()
     return df
 
 

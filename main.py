@@ -16,7 +16,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="PCE Forecasting Pipeline")
     parser.add_argument(
         "--panel",
-        default="pce_national_mom",
+        default=None,
         help="Panel name from config.yaml (default: national)"
     )
     parser.add_argument(
@@ -64,27 +64,35 @@ def load_panel(panel_name: str) -> tuple[pd.Series, pd.DataFrame, pd.Series]:
     return build_panel(panel_name)
 
 
-def run_experiment_stage(
-    y: pd.Series,
-    X: pd.DataFrame,
-    panel_name: str,
-) -> pd.DataFrame:
+def run_experiment_stage(panel_name: str | None = None) -> pd.DataFrame:
     """
-    Config-driven experiment stage. Reads the full trial grid from
-    config.yaml (experiment.models, features.feature_sets) and runs
-    walk-forward evaluation across all combinations.
+    Run model experimentation.
+
+    If panel_name is provided, run only that panel.
+    If panel_name is None, run all panels listed in config["experiment"]["panels"].
     """
     print("\n[STAGE 2] Model experimentation")
 
     horizon = config["forecasting"]["horizons"][0]
     min_train_size = config["forecasting"]["walk_forward_min_train"]
 
-    panels_data = {}
-    for panel_name in config["experiment"]["panels"]:
-        y, X, _ = load_panel(panel_name)
-        panels_data[panel_name] = (y, X)
+    if panel_name is None:
+        panels_to_run = list(config["experiment"]["panels"])
+    else:
+        panels_to_run = [panel_name]
 
-    trials = build_trial_grid(config, panels_data)
+    print(f"[INFO] Experiment panels to run: {panels_to_run}")
+
+    panels_data = {}
+    for p in panels_to_run:
+        y_p, X_p, _ = load_panel(p)
+        panels_data[p] = (y_p, X_p)
+
+    cfg = config.copy()
+    cfg["experiment"] = config["experiment"].copy()
+    cfg["experiment"]["panels"] = panels_to_run
+
+    trials = build_trial_grid(cfg, panels_data)
     return run_experiment(trials, min_train_size, horizon)
 
 
@@ -313,17 +321,22 @@ def main():
         run_data_stage()
 
     if args.stage in ("all", "experiment"):
-        y, X, _ = load_panel(args.panel)    # y_level unused until trading stage
-        run_experiment_stage(y, X, args.panel)
+        run_experiment_stage(args.panel)
 
     if args.stage in ("all", "trading") and not args.skip_trading:
         run_trading_stage(refresh_market_data=args.refresh_market_data)
 
     if args.stage in ("all", "plot"):
         from src.visualization.eval_plots import generate_all_dashboard_plots
-        # Grabs the panel from your command line args
-        generate_all_dashboard_plots(panel_name=args.panel)
 
+        if args.panel is None:
+            plot_panels = list(config["experiment"]["panels"])
+        else:
+            plot_panels = [args.panel]
+
+        for p in plot_panels:
+            print(f"\n[PLOT] Generating dashboard plots for panel '{p}'")
+            generate_all_dashboard_plots(panel_name=p)
     print("\n[DONE] Pipeline complete.")
 
 

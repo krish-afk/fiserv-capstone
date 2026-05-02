@@ -121,7 +121,14 @@ def _top_ranked_trials(
 
 
 def _metric_to_pct_points(value) -> float:
-    # Assumes MAPE stored as ratio, e.g. 0.083 -> 8.3%
+    # MAPE is now stored as percentage points.
+    # Example: 0.774 means 0.774%, 77.4 means 77.4%.
+    return float(value)
+
+
+def _ratio_to_pct_points(value) -> float:
+    # dir_acc is still stored as a ratio.
+    # Example: 0.9565 means 95.65%.
     return float(value) * 100.0
 
 
@@ -235,7 +242,7 @@ def generate_top_k_forecast_plot(
         suffix_parts = []
 
         if pd.notna(dir_acc_value):
-            suffix_parts.append(f"Dir. Acc {float(dir_acc_value):.2f}")
+            suffix_parts.append(f"Dir. Acc {_ratio_to_pct_points(dir_acc_value):.2f}%")
 
         if pd.notna(mape_value):
             suffix_parts.append(f"MAPE {_metric_to_pct_points(mape_value):.2f}%")
@@ -320,7 +327,7 @@ def generate_top_k_mape_comparison_plot(
                 "rank": f"#{rank}",
                 "model": label,
                 "mape_pct": _metric_to_pct_points(row[mape_col]),
-                "dir_acc": float(row[dir_acc_col]),
+                "dir_acc_pct": _ratio_to_pct_points(row[dir_acc_col]),
             }
         )
 
@@ -337,12 +344,12 @@ def generate_top_k_mape_comparison_plot(
             y=plot_df["mape_pct"],
             text=[f"{v:.2f}%" for v in plot_df["mape_pct"]],
             textposition="outside",
-            customdata=plot_df[["rank", "dir_acc"]],
+            customdata=plot_df[["rank", "dir_acc_pct"]],
             hovertemplate=(
                 "<b>%{x}</b><br>"
                 "Rank: %{customdata[0]}<br>"
                 "MAPE: %{y:.2f}%<br>"
-                "Directional Accuracy: %{customdata[1]:.2f}<extra></extra>"
+                "Directional Accuracy: %{customdata[1]:.2f}%<extra></extra>"
             ),
             name="MAPE",
         )

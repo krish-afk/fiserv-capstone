@@ -71,6 +71,19 @@ class ExperimentRunResult:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+def _align_trial_data(y: pd.Series, X: Optional[pd.DataFrame]):
+    if X is None:
+        y_clean = y.dropna()
+        return y_clean, None
+
+    tmp = pd.concat([y.rename("__target__"), X], axis=1)
+    tmp = tmp.replace([float("inf"), float("-inf")], pd.NA).dropna()
+
+    y_clean = tmp["__target__"]
+    X_clean = tmp.drop(columns=["__target__"])
+    return y_clean, X_clean
+
+
 def _apply_feature_set(
     X: pd.DataFrame,
     patterns: List[str],
@@ -206,13 +219,15 @@ def build_trial_grid(
                             print(f"[WARN] Feature set '{fs_name}' not defined in "
                                   f"features.feature_sets — skipping")
                             continue
-                        # Fresh model instance per trial — never share state
+                        X_selected = X_by_fs[fs_name]
+                        y_trial, X_trial = _align_trial_data(y, X_selected)
+
                         trials.append(Trial(
                             model=cls(horizon=horizon, **params),
                             model_label=label,
                             feature_set_name=fs_name,
-                            X=X_by_fs[fs_name],
-                            y=y,
+                            X=X_trial,
+                            y=y_trial,
                             panel_name=panel_name,
                         ))
 
@@ -243,8 +258,11 @@ def _execute_experiment(
                 min_train_size,
                 horizon,
             )
-            metrics = compute_metrics(preds["y_true"], preds["y_pred"])
-
+            metrics = compute_metrics(
+                preds["y_true"],
+                preds["y_pred"],
+                y_prev=preds["y_prev"] if "y_prev" in preds.columns else None,
+            )
             summary_rows.append({
                 "panel_name": trial.panel_name,
                 "model_name": trial.model_label,
@@ -276,6 +294,7 @@ def _execute_experiment(
                 "rmse": None,
                 "me": None,
                 "mape": None,
+                "mape_ratio": None,
                 "dir_acc": None,
                 "r2": None,
                 "error": str(e),

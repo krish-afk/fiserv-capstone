@@ -212,11 +212,16 @@ def build_panel(
         X = X.drop(columns=other_targets)
 
     # Apply target transform; trim X and y_level to match (shorter after pct_change)
-    y       = transform_target(y_raw, method=target_transform)
-    X       = X.loc[y.index]
+    y = transform_target(y_raw, method=target_transform)
+    y.name = f"{target_col}_{target_transform}" if target_transform else target_col
+
+    X = X.loc[y.index].copy()
     y_level = y_raw.loc[y.index]
 
-    y.name = f"{target_col}_{target_transform}" if target_transform else target_col
+    # Add AR lags of the transformed target, e.g. pce_mom_lag1, pce_mom_lag2, pce_mom_lag3.
+    # This is time-safe because it only uses prior target values.
+    for lag in config["features"].get("target_lags", []):
+        X[f"{y.name}_lag{lag}"] = y.shift(lag)
 
     fsbi_cols = [c for c in X.columns if c.startswith("fsbi_")]
     macro_feature_cols = [c for c in X.columns if not c.startswith("fsbi_")]

@@ -241,6 +241,14 @@ function looksIntegerKey(key) {
 function formatNumericValue(key, value) {
   if (value === null || value === undefined || Number.isNaN(value)) return '—'
 
+  // MAPE is stored as percentage points.
+  // Example: 0.774 means 0.774%.
+  if (key === 'mape') {
+    return `${Number(value).toFixed(3)}%`
+  }
+
+  // Directional accuracy is stored as a ratio.
+  // Example: 0.9565 means 95.65%.
   if (looksPercentKey(key)) {
     return `${(Number(value) * 100).toFixed(2)}%`
   }

@@ -14,8 +14,362 @@ def calculate_metrics(y_true, y_pred):
     return mape, dir_acc
 
 # ---------------------------------------------------------
+# PRESENTATION / DASHBOARD MODEL COMPARISON HELPERS
+# ---------------------------------------------------------
+LOWER_IS_BETTER_METRICS = {"rmse", "mae", "mape", "me", "abs_error", "absolute_error"}
+HIGHER_IS_BETTER_METRICS = {"dir_acc", "directional_accuracy", "r2"}
+
+
+def _slug(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(value)).strip("_")
+
+
+def _panel_display_name(panel_name: str) -> str:
+    pieces = str(panel_name).split("_")
+    target = pieces[0].upper() if pieces else str(panel_name)
+
+    if "mom" in pieces:
+        return f"{target} MoM"
+    if "yoy" in pieces:
+        return f"{target} YoY"
+    return f"{target} Level"
+
+
+def _model_family_label(model_name: str) -> str:
+    name = str(model_name).lower()
+
+    checks = [
+        ("xgboost", "XGBoost"),
+        ("randomforest", "Random Forest"),
+        ("random_forest", "Random Forest"),
+        ("gradientboosting", "Gradient Boosting"),
+        ("gradient_boosting", "Gradient Boosting"),
+        ("gbm", "Gradient Boosting"),
+        ("theta", "Theta"),
+        ("etsx", "ETSX"),
+        ("arimax", "ARIMAX"),
+        ("arima", "ARIMA"),
+        ("ridge", "Ridge"),
+        ("lasso", "Lasso"),
+        ("ols", "OLS"),
+        ("ets", "ETS"),
+        ("naive", "Naive"),
+        ("mean", "Mean"),
+    ]
+
+    for needle, label in checks:
+        if needle in name:
+            return label
+
+    return str(model_name).split("_")[0].replace("-", " ").title()
+
+
+def _trial_display_label(row: pd.Series, include_feature_set: bool = True) -> str:
+    family = _model_family_label(row.get("model_name", "model"))
+    feature_set = row.get("feature_set")
+
+    if include_feature_set and isinstance(feature_set, str) and feature_set:
+        return f"{family} | {feature_set}"
+
+    return family
+
+
+def _get_dir_acc_col(metrics_df: pd.DataFrame) -> str:
+    for col in ["dir_acc", "directional_accuracy"]:
+        if col in metrics_df.columns:
+            return col
+    raise ValueError("metrics_df must contain 'dir_acc' or 'directional_accuracy'.")
+
+
+def _get_mape_col(metrics_df: pd.DataFrame) -> str:
+    if "mape" not in metrics_df.columns:
+        raise ValueError("metrics_df must contain 'mape'.")
+    return "mape"
+
+
+def _top_ranked_trials(
+    metrics_df: pd.DataFrame,
+    panel_name: str,
+    top_k: int = 5,
+) -> tuple[pd.DataFrame, str, str]:
+    """
+    Rank models using:
+    1) directional accuracy DESC
+    2) MAPE ASC
+
+    Returns:
+        top_rows, dir_acc_col, mape_col
+    """
+    dir_acc_col = _get_dir_acc_col(metrics_df)
+    mape_col = _get_mape_col(metrics_df)
+
+    panel_metrics = metrics_df[metrics_df["panel_name"] == panel_name].copy()
+    if panel_metrics.empty:
+        return panel_metrics, dir_acc_col, mape_col
+
+    panel_metrics[dir_acc_col] = pd.to_numeric(panel_metrics[dir_acc_col], errors="coerce")
+    panel_metrics[mape_col] = pd.to_numeric(panel_metrics[mape_col], errors="coerce")
+
+    panel_metrics = panel_metrics.dropna(subset=[dir_acc_col, mape_col])
+
+    panel_metrics = panel_metrics.sort_values(
+        by=[dir_acc_col, mape_col],
+        ascending=[False, True],
+    )
+
+    return panel_metrics.head(int(top_k)).copy(), dir_acc_col, mape_col
+
+
+def _metric_to_pct_points(value) -> float:
+    # Assumes MAPE stored as ratio, e.g. 0.083 -> 8.3%
+    return float(value) * 100.0
+
+
+def _write_plot(fig: go.Figure, html_path: Path, png_path: Path | None = None) -> None:
+    fig.write_html(str(html_path))
+
+    if png_path is None:
+        return
+
+    try:
+        fig.write_image(str(png_path), width=1280, height=720, scale=2)
+    except Exception as e:
+        print(f"[PLOT] PNG export skipped for {html_path.name}: {e}")
+
+# ---------------------------------------------------------
 # CORE PLOT 1: FORECAST OVERLAY
 # ---------------------------------------------------------
+
+def generate_top_k_forecast_plot(
+    plot_dir: Path,
+    forecasts_df: pd.DataFrame,
+    metrics_df: pd.DataFrame,
+    panel_name: str,
+    top_k: int = 5,
+):
+    """
+    Top-K models ranked by:
+    1) Directional Accuracy (descending)
+    2) MAPE (ascending)
+
+    Then plot those forecasts against the actual series.
+    """
+    print(f"[PLOT] Generating Top {top_k} Forecasts vs Actual for {panel_name}...")
+
+    top_rows, dir_acc_col, mape_col = _top_ranked_trials(
+        metrics_df=metrics_df,
+        panel_name=panel_name,
+        top_k=top_k,
+    )
+
+    if top_rows.empty:
+        print(f"[PLOT] No ranked models available for panel '{panel_name}'.")
+        return
+
+    panel_forecasts = forecasts_df[forecasts_df["panel_name"] == panel_name].copy()
+    if panel_forecasts.empty:
+        print(f"[PLOT] No forecasts available for panel '{panel_name}'.")
+        return
+
+    panel_forecasts["date"] = pd.to_datetime(panel_forecasts["date"])
+
+    actual = (
+        panel_forecasts.sort_values("date")
+        .groupby("date", as_index=True)["y_true"]
+        .first()
+        .rename("Actual")
+    )
+
+    plot_df = actual.to_frame()
+    labels_seen: set[str] = set()
+    selected_labels: list[tuple[str, pd.Series, pd.Series]] = []
+
+    for _, row in top_rows.iterrows():
+        trial_forecasts = panel_forecasts[
+            (panel_forecasts["model_name"] == row["model_name"])
+            & (panel_forecasts["feature_set"] == row["feature_set"])
+        ].copy()
+
+        if trial_forecasts.empty:
+            continue
+
+        label = _trial_display_label(row)
+
+        if label in labels_seen:
+            label = f"{label} #{len(labels_seen) + 1}"
+
+        labels_seen.add(label)
+
+        series = (
+            trial_forecasts
+            .set_index("date")
+            .sort_index()["y_pred"]
+            .rename(label)
+        )
+
+        plot_df = plot_df.join(series, how="left")
+        selected_labels.append((label, series, row))
+
+    plot_df = plot_df.dropna(subset=["Actual"])
+
+    if not selected_labels:
+        print(f"[PLOT] No selected forecast series were found for panel '{panel_name}'.")
+        return
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=plot_df.index,
+            y=plot_df["Actual"],
+            mode="lines+markers",
+            name="Actual",
+            line=dict(color="black", width=3),
+        )
+    )
+
+    for rank, (label, _, row) in enumerate(selected_labels, start=1):
+        dir_acc_value = row.get(dir_acc_col)
+        mape_value = row.get(mape_col)
+
+        suffix_parts = []
+
+        if pd.notna(dir_acc_value):
+            suffix_parts.append(f"Dir. Acc {float(dir_acc_value):.2f}")
+
+        if pd.notna(mape_value):
+            suffix_parts.append(f"MAPE {_metric_to_pct_points(mape_value):.2f}%")
+
+        suffix = ""
+        if suffix_parts:
+            suffix = " | " + " | ".join(suffix_parts)
+
+        fig.add_trace(
+            go.Scatter(
+                x=plot_df.index,
+                y=plot_df[label],
+                mode="lines",
+                name=f"#{rank} {label}{suffix}",
+                line=dict(width=2),
+            )
+        )
+
+    panel_title = _panel_display_name(panel_name)
+
+    fig.update_layout(
+        title=f"{panel_title}: Top {len(selected_labels)} Forecasts vs Actual",
+        xaxis_title="Date",
+        yaxis_title="Target value",
+        template="plotly_white",
+        hovermode="x unified",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.38,
+            xanchor="left",
+            x=0,
+        ),
+        height=700,
+        margin=dict(t=90, b=200),
+    )
+
+    slug = _slug(panel_name)
+
+    _write_plot(
+        fig,
+        plot_dir / f"dash_top{len(selected_labels)}_forecasts_vs_actual_{slug}.html",
+        plot_dir / f"slide_top{len(selected_labels)}_forecasts_vs_actual_{slug}.png",
+    )
+
+def generate_top_k_mape_comparison_plot(
+    plot_dir: Path,
+    metrics_df: pd.DataFrame,
+    panel_name: str,
+    top_k: int = 5,
+):
+    """
+    Build a MAPE comparison bar chart for the SAME Top-K models chosen using:
+    1) Directional Accuracy DESC
+    2) MAPE ASC
+    """
+    print(f"[PLOT] Generating Top {top_k} MAPE comparison for {panel_name}...")
+
+    top_rows, dir_acc_col, mape_col = _top_ranked_trials(
+        metrics_df=metrics_df,
+        panel_name=panel_name,
+        top_k=top_k,
+    )
+
+    if top_rows.empty:
+        print(f"[PLOT] No ranked models available for panel '{panel_name}'.")
+        return
+
+    plot_rows = []
+    labels_seen: set[str] = set()
+
+    for rank, (_, row) in enumerate(top_rows.iterrows(), start=1):
+        label = _trial_display_label(row)
+
+        if label in labels_seen:
+            label = f"{label} #{rank}"
+
+        labels_seen.add(label)
+
+        plot_rows.append(
+            {
+                "rank": f"#{rank}",
+                "model": label,
+                "mape_pct": _metric_to_pct_points(row[mape_col]),
+                "dir_acc": float(row[dir_acc_col]),
+            }
+        )
+
+    plot_df = pd.DataFrame(plot_rows)
+    if plot_df.empty:
+        print(f"[PLOT] No MAPE comparison rows available for panel '{panel_name}'.")
+        return
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Bar(
+            x=plot_df["model"],
+            y=plot_df["mape_pct"],
+            text=[f"{v:.2f}%" for v in plot_df["mape_pct"]],
+            textposition="outside",
+            customdata=plot_df[["rank", "dir_acc"]],
+            hovertemplate=(
+                "<b>%{x}</b><br>"
+                "Rank: %{customdata[0]}<br>"
+                "MAPE: %{y:.2f}%<br>"
+                "Directional Accuracy: %{customdata[1]:.2f}<extra></extra>"
+            ),
+            name="MAPE",
+        )
+    )
+
+    panel_title = _panel_display_name(panel_name)
+
+    fig.update_layout(
+        title=f"MAPE Error Comparison: Top {len(plot_df)} {panel_title} Models",
+        xaxis_title="Model",
+        yaxis_title="MAPE (%)",
+        template="plotly_white",
+        height=650,
+        margin=dict(t=90, b=150),
+        showlegend=False,
+    )
+
+    fig.update_xaxes(tickangle=-25)
+
+    slug = _slug(panel_name)
+
+    _write_plot(
+        fig,
+        plot_dir / f"dash_top{len(plot_df)}_mape_comparison_{slug}.html",
+        plot_dir / f"slide_top{len(plot_df)}_mape_comparison_{slug}.png",
+    )
+
 def generate_forecast_plot(plot_dir: Path, forecasts_df: pd.DataFrame, metrics_df: pd.DataFrame, panel_name: str, baseline_model_name: str = "naive"):
     print(f"[PLOT] Generating Forecast Overlay for {panel_name}...")
     best_df = select_best_model(forecasts_df, metrics_df, panel_name=panel_name)
@@ -325,19 +679,50 @@ def generate_trading_plots(run_dir: Path, plot_dir: Path):
             print(f"[PLOT] Missing CSV files for Standard Strategy: {strategy_name}")
 
 def generate_all_dashboard_plots(panel_name: str = "mrts_national"):
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print("🎨 GENERATING DASHBOARD VISUALIZATIONS")
-    print("="*50)
-    
+    print("=" * 50)
+
     run_dir, forecasts_df, metrics_df = load_latest_run_frames()
+
     plot_dir = run_dir / "plots"
     plot_dir.mkdir(parents=True, exist_ok=True)
-    
-    generate_forecast_plot(plot_dir, forecasts_df, metrics_df, panel_name)
-    generate_macro_profiler(plot_dir, forecasts_df, metrics_df, panel_name)
+
+    viz_cfg = config.get("visualization", {}) if isinstance(config, dict) else {}
+    top_k = int(viz_cfg.get("top_k_forecast_models", 5))
+
+    generate_forecast_plot(
+        plot_dir=plot_dir,
+        forecasts_df=forecasts_df,
+        metrics_df=metrics_df,
+        panel_name=panel_name,
+    )
+
+    generate_top_k_forecast_plot(
+        plot_dir=plot_dir,
+        forecasts_df=forecasts_df,
+        metrics_df=metrics_df,
+        panel_name=panel_name,
+        top_k=top_k,
+    )
+
+    generate_top_k_mape_comparison_plot(
+        plot_dir=plot_dir,
+        metrics_df=metrics_df,
+        panel_name=panel_name,
+        top_k=top_k,
+    )
+
+    generate_macro_profiler(
+        plot_dir=plot_dir,
+        forecasts_df=forecasts_df,
+        metrics_df=metrics_df,
+        panel_name=panel_name,
+    )
+
     generate_trading_plots(run_dir, plot_dir)
-    
-    print("="*50)
+
+    print("=" * 50)
     print(f"[DONE] All interactive dashboards saved to {plot_dir}")
 
 if __name__ == "__main__":

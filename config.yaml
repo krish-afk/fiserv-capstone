@@ -415,6 +415,11 @@ trading:
         exit_z: 0.8   # |z| threshold to close a position (mean reversion)
         # dollar-neutral position sizing
         position_size: 0.5   # long leg weight; short leg gets -position_size
+visualization:
+  top_k_forecast_models: 5
+  mape_comparison_panels:
+    - pce_national_mom
+    - mrts_national
 
 logging:
   level: "INFO"

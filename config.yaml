@@ -354,7 +354,7 @@ trading:
         edge_threshold: 0.15
         contract_price: 0.50
 
-    anjalika_adaptive_regime:
+    adaptive_regime:
       class: AdaptiveRegimeStrategy
       forecast_panels:
         primary: "pce_national_mom" 

@@ -448,7 +448,11 @@ def run_trading_pipeline_from_frames(
     Run trading from in-memory experiment outputs produced by the current API run.
     """
     cfg = cfg or config
-    mode = str(test_mode or cfg.get("trading", {}).get("test_mode", "backtest")).lower()
+    configured_modes = cfg.get("trading", {}).get("test_modes", ["backtest"])
+    if isinstance(configured_modes, str):
+        configured_modes = [configured_modes]
+
+    mode = str(test_mode or configured_modes[0]).lower()
 
     data = build_strategy_data_from_frames(
         strategy=strategy,
@@ -465,14 +469,29 @@ def run_trading_pipeline_from_frames(
     target_output_dir = Path(output_dir or (Path(cfg["paths"]["experiments"]) / "dashboard_trading"))
     engine = BacktestEngine()
 
-    results = engine.run_portfolio(
-        strategy=strategy,
-        data=data,
-        output_dir=target_output_dir,
-        test_mode=mode,
-        trade_start_date=trade_start_date,
-        trade_end_date=trade_end_date,
-    )
+    resolved_tickers = resolve_strategy_tickers(strategy, cfg=cfg)
+    strategy_cfg = get_active_strategy_config(cfg)
+    use_forecastex = bool(strategy_cfg.get("forecastex", {}).get("enabled", False))
+
+    if use_forecastex or not resolved_tickers:
+        all_results = engine.run_forecastex(
+            strategy=strategy,
+            data=data,
+            all_forecasts=data.context.get("all_forecasts", forecasts_df),
+            output_dir=target_output_dir,
+            test_modes=[mode],
+        )
+    else:
+        all_results = engine.run_portfolio(
+            strategy=strategy,
+            data=data,
+            output_dir=target_output_dir,
+            test_modes=[mode],
+            trade_start_date=trade_start_date,
+            trade_end_date=trade_end_date,
+        )
+
+    results = all_results.get(mode, {})
 
     trades_df = _read_trades_artifact(
         output_dir=target_output_dir,

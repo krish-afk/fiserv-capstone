@@ -1,6 +1,7 @@
 import argparse
 import pandas as pd
 from pathlib import Path
+from typing import Optional
 
 from src.utils.config import config
 from src.data.ingest import run_ingestion
@@ -64,7 +65,7 @@ def load_panel(panel_name: str) -> tuple[pd.Series, pd.DataFrame, pd.Series]:
     return build_panel(panel_name)
 
 
-def run_experiment_stage(panel_name: str | None = None) -> pd.DataFrame:
+def run_experiment_stage(panel_name: Optional[str] = None) -> pd.DataFrame:
     """
     Run model experimentation.
 

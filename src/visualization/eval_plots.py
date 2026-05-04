@@ -4,6 +4,7 @@ import numpy as np
 from pathlib import Path
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from typing import Optional
 
 from src.utils.config import config
 from src.trading.strategy import load_latest_run_frames, select_best_model
@@ -132,7 +133,7 @@ def _ratio_to_pct_points(value) -> float:
     return float(value) * 100.0
 
 
-def _write_plot(fig: go.Figure, html_path: Path, png_path: Path | None = None) -> None:
+def _write_plot(fig: go.Figure, html_path: Path, png_path: Optional[Path] = None) -> None:
     fig.write_html(str(html_path))
 
     if png_path is None:

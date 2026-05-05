@@ -19,6 +19,7 @@ def calculate_metrics(y_true, y_pred):
 # ---------------------------------------------------------
 LOWER_IS_BETTER_METRICS = {"rmse", "mae", "mape", "me", "abs_error", "absolute_error"}
 HIGHER_IS_BETTER_METRICS = {"dir_acc", "directional_accuracy", "r2"}
+AR3_BASELINE_MODEL_NAMES = ("ar3_baseline", "ar_3_baseline", "ar(3)_baseline", "ar3")
 
 
 def _slug(value: str) -> str:
@@ -56,6 +57,9 @@ def _model_family_label(model_name: str) -> str:
         ("ets", "ETS"),
         ("naive", "Naive"),
         ("mean", "Mean"),
+        ("ar3", "AR(3)"),
+        ("ar_3", "AR(3)"),
+        ("ar(3)", "AR(3)"),
     ]
 
     for needle, label in checks:
@@ -69,7 +73,15 @@ def _trial_display_label(row: pd.Series, include_feature_set: bool = True) -> st
     family = _model_family_label(row.get("model_name", "model"))
     feature_set = row.get("feature_set")
 
-    if include_feature_set and isinstance(feature_set, str) and feature_set:
+    if family == "AR(3)":
+        return "AR(3) Baseline"
+
+    if (
+        include_feature_set
+        and isinstance(feature_set, str)
+        and feature_set
+        and feature_set.lower() != "none"
+    ):
         return f"{family} | {feature_set}"
 
     return family
@@ -120,6 +132,63 @@ def _top_ranked_trials(
 
     return panel_metrics.head(int(top_k)).copy(), dir_acc_col, mape_col
 
+def _find_model_row(
+    metrics_df: pd.DataFrame,
+    panel_name: str,
+    model_names: tuple[str, ...],
+) -> pd.Series | None:
+    """Return the best matching metrics row for a named model on a panel."""
+    panel_metrics = metrics_df[metrics_df["panel_name"] == panel_name].copy()
+    if panel_metrics.empty:
+        return None
+
+    wanted = {m.lower() for m in model_names}
+    panel_metrics["__model_name_lower__"] = panel_metrics["model_name"].astype(str).str.lower()
+    matches = panel_metrics[panel_metrics["__model_name_lower__"].isin(wanted)].copy()
+    if matches.empty:
+        return None
+
+    dir_acc_col = _get_dir_acc_col(metrics_df)
+    mape_col = _get_mape_col(metrics_df)
+    matches[dir_acc_col] = pd.to_numeric(matches[dir_acc_col], errors="coerce")
+    matches[mape_col] = pd.to_numeric(matches[mape_col], errors="coerce")
+    matches = matches.sort_values(by=[dir_acc_col, mape_col], ascending=[False, True])
+    return matches.iloc[0].drop(labels=["__model_name_lower__"], errors="ignore")
+
+
+def _forecast_series_for_row(
+    panel_forecasts: pd.DataFrame,
+    row: pd.Series,
+    label: str,
+) -> pd.Series:
+    trial_forecasts = panel_forecasts[
+        (panel_forecasts["model_name"] == row["model_name"])
+        & (panel_forecasts["feature_set"] == row["feature_set"])
+    ].copy()
+
+    if trial_forecasts.empty:
+        return pd.Series(dtype="float64", name=label)
+
+    return (
+        trial_forecasts
+        .set_index("date")
+        .sort_index()["y_pred"]
+        .rename(label)
+    )
+
+
+def _metric_suffix(row: pd.Series, dir_acc_col: str, mape_col: str) -> str:
+    suffix_parts = []
+
+    dir_acc_value = row.get(dir_acc_col)
+    if pd.notna(dir_acc_value):
+        suffix_parts.append(f"Dir. Acc {_ratio_to_pct_points(dir_acc_value):.2f}%")
+
+    mape_value = row.get(mape_col)
+    if pd.notna(mape_value):
+        suffix_parts.append(f"MAPE {_metric_to_pct_points(mape_value):.2f}%")
+
+    return " | " + " | ".join(suffix_parts) if suffix_parts else ""
 
 def _metric_to_pct_points(value) -> float:
     # MAPE is now stored as percentage points.
@@ -154,6 +223,7 @@ def generate_top_k_forecast_plot(
     metrics_df: pd.DataFrame,
     panel_name: str,
     top_k: int = 5,
+    baseline_model_names: tuple[str, ...] = AR3_BASELINE_MODEL_NAMES,
 ):
     """
     Top-K models ranked by:
@@ -237,20 +307,7 @@ def generate_top_k_forecast_plot(
     )
 
     for rank, (label, _, row) in enumerate(selected_labels, start=1):
-        dir_acc_value = row.get(dir_acc_col)
-        mape_value = row.get(mape_col)
-
-        suffix_parts = []
-
-        if pd.notna(dir_acc_value):
-            suffix_parts.append(f"Dir. Acc {_ratio_to_pct_points(dir_acc_value):.2f}%")
-
-        if pd.notna(mape_value):
-            suffix_parts.append(f"MAPE {_metric_to_pct_points(mape_value):.2f}%")
-
-        suffix = ""
-        if suffix_parts:
-            suffix = " | " + " | ".join(suffix_parts)
+        suffix = _metric_suffix(row, dir_acc_col, mape_col)
 
         fig.add_trace(
             go.Scatter(
@@ -261,11 +318,38 @@ def generate_top_k_forecast_plot(
                 line=dict(width=2),
             )
         )
+    
+    baseline_row = _find_model_row(metrics_df, panel_name, baseline_model_names)
+    baseline_added = False
+    selected_model_names = {str(row.get("model_name")).lower() for _, _, row in selected_labels}
+
+    if baseline_row is not None and str(baseline_row.get("model_name")).lower() not in selected_model_names:
+        baseline_label = "AR(3) Baseline"
+        baseline_series = _forecast_series_for_row(panel_forecasts, baseline_row, baseline_label)
+
+        if not baseline_series.empty:
+            plot_df = plot_df.join(baseline_series, how="left")
+            suffix = _metric_suffix(baseline_row, dir_acc_col, mape_col)
+            fig.add_trace(
+                go.Scatter(
+                    x=plot_df.index,
+                    y=plot_df[baseline_label],
+                    mode="lines",
+                    name=f"{baseline_label}{suffix}",
+                    line=dict(color="gray", width=3, dash="dot"),
+                )
+            )
+            baseline_added = True
+    elif baseline_row is None:
+        print(f"[PLOT] AR(3) baseline not found for panel '{panel_name}'. Run the experiment stage after adding AR3BaselineForecaster.")
 
     panel_title = _panel_display_name(panel_name)
 
     fig.update_layout(
-        title=f"{panel_title}: Top {len(selected_labels)} Forecasts vs Actual",
+        title=(
+            f"{panel_title}: Top {len(selected_labels)} Forecasts"
+            f"{' + AR(3) Baseline' if baseline_added else ''} vs Actual"
+        ),
         xaxis_title="Date",
         yaxis_title="Target value",
         template="plotly_white",
@@ -378,27 +462,62 @@ def generate_top_k_mape_comparison_plot(
         plot_dir / f"slide_top{len(plot_df)}_mape_comparison_{slug}.png",
     )
 
-def generate_forecast_plot(plot_dir: Path, forecasts_df: pd.DataFrame, metrics_df: pd.DataFrame, panel_name: str, baseline_model_name: str = "naive"):
+def generate_forecast_plot(
+    plot_dir: Path,
+    forecasts_df: pd.DataFrame,
+    metrics_df: pd.DataFrame,
+    panel_name: str,
+    baseline_model_name: str = "ar3_baseline",
+):
     print(f"[PLOT] Generating Forecast Overlay for {panel_name}...")
     best_df = select_best_model(forecasts_df, metrics_df, panel_name=panel_name)
-    best_model_full_name = best_df.iloc[0]['model_name']
-    display_model_name = best_model_full_name.split('_')[0].upper()
-    best_df = best_df.set_index('date').sort_index()
-    
-    baseline_df = forecasts_df[(forecasts_df['panel_name'] == panel_name) & (forecasts_df['model_name'] == baseline_model_name)].set_index('date').sort_index()
-    plot_df = pd.DataFrame({'Actual': best_df['y_true'], 'Best Model': best_df['y_pred']})
-    if not baseline_df.empty: plot_df['Baseline'] = baseline_df['y_pred']
-    plot_df = plot_df.dropna()
+    best_model_full_name = best_df.iloc[0]["model_name"]
+    display_model_name = best_model_full_name.split("_")[0].upper()
+    best_df = best_df.set_index("date").sort_index()
 
-    best_mape, best_dir = calculate_metrics(plot_df['Actual'], plot_df['Best Model'])
-    base_mape, base_dir = calculate_metrics(plot_df['Actual'], plot_df['Baseline']) if not baseline_df.empty else (0, 0)
+    baseline_names = (baseline_model_name,) + tuple(
+        name for name in AR3_BASELINE_MODEL_NAMES if name != baseline_model_name
+    )
+    baseline_row = _find_model_row(metrics_df, panel_name, baseline_names)
+
+    plot_df = pd.DataFrame({"Actual": best_df["y_true"], "Best Model": best_df["y_pred"]})
+    baseline_label = "AR(3) Baseline"
+
+    if baseline_row is not None:
+        panel_forecasts = forecasts_df[forecasts_df["panel_name"] == panel_name].copy()
+        panel_forecasts["date"] = pd.to_datetime(panel_forecasts["date"])
+        baseline_series = _forecast_series_for_row(panel_forecasts, baseline_row, baseline_label)
+        if not baseline_series.empty:
+            plot_df = plot_df.join(baseline_series, how="left")
+    else:
+        print(f"[PLOT] AR(3) baseline not found for panel '{panel_name}'.")
+
+    plot_df = plot_df.dropna(subset=["Actual", "Best Model"])
+
+    best_mape, _ = calculate_metrics(plot_df["Actual"], plot_df["Best Model"])
+    base_mape = None
+    if baseline_label in plot_df.columns and plot_df[baseline_label].notna().any():
+        baseline_eval = plot_df.dropna(subset=[baseline_label])
+        base_mape, _ = calculate_metrics(baseline_eval["Actual"], baseline_eval[baseline_label])
+
+    subtitle = f"Best Model (MAPE: {best_mape:.2f}%)"
+    if base_mape is not None:
+        subtitle += f" vs AR(3) Baseline (MAPE: {base_mape:.2f}%)"
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['Actual'], mode='lines', name='Actual (Ground Truth)', line=dict(color='black', width=2)))
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['Best Model'], mode='lines', name=f'Best ({display_model_name})', line=dict(color='blue', width=2, dash='dash')))
-    if not baseline_df.empty: fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df['Baseline'], mode='lines', name='Baseline (Naive)', line=dict(color='red', width=2, dash='dot')))
+    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["Actual"], mode="lines", name="Actual (Ground Truth)", line=dict(color="black", width=2)))
+    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["Best Model"], mode="lines", name=f"Best ({display_model_name})", line=dict(color="blue", width=2, dash="dash")))
+    if baseline_label in plot_df.columns:
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df[baseline_label], mode="lines", name=baseline_label, line=dict(color="gray", width=2, dash="dot")))
 
-    fig.update_layout(title=f"Out-of-Sample Predictions: {panel_name}<br><sup>Best Model (MAPE: {best_mape:.2f}%) vs Baseline (MAPE: {base_mape:.2f}%)</sup>", xaxis_title="Date", yaxis_title="Value", template="plotly_white", hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    fig.update_layout(
+        title=f"Out-of-Sample Predictions: {panel_name}<br><sup>{subtitle}</sup>",
+        xaxis_title="Date",
+        yaxis_title="Value",
+        template="plotly_white",
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
     fig.write_html(str(plot_dir / f"dash_forecast_{panel_name}.html"))
 
 # ---------------------------------------------------------

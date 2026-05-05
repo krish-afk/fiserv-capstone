@@ -216,6 +216,37 @@ features:
       - "crude_oil_wti_lag1"
       - "credit_spread_baa_lag1"
       - "treasury_10y_lag1"
+    
+    target_ar3_lags:
+      # PCE level
+      - "pce_lag1"
+      - "pce_lag2"
+      - "pce_lag3"
+
+      # PCE MoM
+      - "pce_mom_lag1"
+      - "pce_mom_lag2"
+      - "pce_mom_lag3"
+
+      # PCE YoY
+      - "pce_yoy_lag1"
+      - "pce_yoy_lag2"
+      - "pce_yoy_lag3"
+
+      # MRTS level
+      - "mrts_lag1"
+      - "mrts_lag2"
+      - "mrts_lag3"
+
+      # MRTS MoM
+      - "mrts_mom_lag1"
+      - "mrts_mom_lag2"
+      - "mrts_mom_lag3"
+
+      # MRTS YoY
+      - "mrts_yoy_lag1"
+      - "mrts_yoy_lag2"
+      - "mrts_yoy_lag3"
 
 # ---------------------------------------------------------------------------
 # Transforms — scaling and differencing applied after feature construction,
@@ -263,6 +294,9 @@ experiment:
           feature_sets: [none]
         - class: MeanForecaster
           feature_sets: [none]
+        - class: AR3BaselineForecaster
+          params: {order: 3}
+          feature_sets: [target_ar3_lags]
 
     timeseries:
       enabled: true

@@ -10,7 +10,7 @@ from typing import Dict, List, NamedTuple, Optional, Tuple
 from dataclasses import dataclass
 
 from src.models.base import BaseForecaster
-from src.models.baselines import NaiveForecaster, MeanForecaster
+from src.models.baselines import NaiveForecaster, MeanForecaster, AR3BaselineForecaster
 from src.models.timeseries import (
     ARIMAForecaster,
     ARIMAXForecaster,
@@ -37,6 +37,7 @@ from src.utils.config import config
 _MODEL_REGISTRY: Dict[str, type] = {
     "NaiveForecaster":            NaiveForecaster,
     "MeanForecaster":             MeanForecaster,
+    "AR3BaselineForecaster":      AR3BaselineForecaster,
     "ARIMAForecaster":            ARIMAForecaster,
     "ARIMAXForecaster":           ARIMAXForecaster,
     "ETSForecaster":              ETSForecaster,

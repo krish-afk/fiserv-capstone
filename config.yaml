@@ -434,7 +434,7 @@ trading:
       class: "MRTSForecastMarketStrategy"
       # Role "primary" maps to the panel whose forecasts are compared against Bloomberg consensus.
       forecast_panels:
-        primary: "mrts_national"      # feeds strategy input "forecasts"
+        primary: "mrts_national_mom"      # feeds strategy input "forecasts"
       # Set both fields to null to auto-select by lowest RMSE from experiment results.
       selected_model:
         mrts_national:
@@ -445,7 +445,7 @@ trading:
       params:
         bloomberg_csv_path: "data/raw/bbg_mrts.csv"
         model_rmse: 0.15
-        edge_threshold: 0.15
+        edge_threshold: 0.19
         contract_price: 0.50
 
     adaptive_regime:

@@ -445,7 +445,7 @@ trading:
       params:
         bloomberg_csv_path: "data/raw/bbg_mrts.csv"
         model_rmse: 0.15
-        edge_threshold: 0.19
+        edge_threshold: 0.25
         contract_price: 0.50
 
     adaptive_regime:
